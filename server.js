@@ -70,7 +70,6 @@ async function callLocalGemma(message) {
       model: llmModel,
       temperature: 0,
       max_tokens: 350,
-      response_format: { type: 'json_object' },
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: `${message}\n\nตอบกลับเป็น JSON object เท่านั้น ห้ามใส่ markdown ห้ามอธิบายเพิ่ม` }
@@ -90,7 +89,14 @@ async function callLocalGemma(message) {
     throw new Error(`LLM returned non-JSON content: ${content.slice(0, 160)}`);
   }
   const jsonText = content.slice(start, end + 1);
-  return JSON.parse(jsonText);
+  const parsed = JSON.parse(jsonText);
+  const fallback = fallbackTriage(message);
+  return {
+    agentReply: parsed.agentReply || fallback.agentReply,
+    ticket: typeof parsed.ticket === 'object' && parsed.ticket !== null
+      ? { ...fallback.ticket, ...parsed.ticket }
+      : fallback.ticket
+  };
 }
 
 async function saveTicket(ticket, sourceMessage, agentReply) {

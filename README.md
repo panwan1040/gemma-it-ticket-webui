@@ -49,8 +49,8 @@ scripts/dev_all.sh
 
 ## ค่าโมเดลที่ตั้งไว้
 
-- Model: `Gemma 4 12B QAT Q4_0 GGUF`
-- Context: `16384`
+- Model default: `Gemma 4 E4B QAT Q4_0 GGUF`
+- Context default: `8192` for E4B, `16384` optional for 12B
 - Batch size: `1024`
 - Micro-batch: `256`
 - GPU layers: `99`
@@ -88,4 +88,28 @@ GOOGLE_SHEET_WEBHOOK_URL=https://script.google.com/macros/s/xxxx/exec
 memory_pressure
 vm_stat
 top -o mem
+```
+
+
+## เลือกโมเดล
+
+ค่า default ตอนนี้คือ E4B QAT เพราะเหมาะกับ Mac 16GB มากกว่า 12B สำหรับงาน Ticket/RAG เบาๆ
+
+ดาวน์โหลด E4B:
+
+```zsh
+MODEL_SIZE=e4b scripts/download_model.sh
+```
+
+เปิด E4B:
+
+```zsh
+MODEL_SIZE=e4b CTX_SIZE=8192 scripts/start_model.sh
+```
+
+กลับไปใช้ 12B:
+
+```zsh
+MODEL_SIZE=12b scripts/download_model.sh
+MODEL_SIZE=12b CTX_SIZE=16384 scripts/start_model.sh
 ```
