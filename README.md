@@ -113,3 +113,20 @@ MODEL_SIZE=e4b CTX_SIZE=8192 scripts/start_model.sh
 MODEL_SIZE=12b scripts/download_model.sh
 MODEL_SIZE=12b CTX_SIZE=16384 scripts/start_model.sh
 ```
+
+
+## Chat triage mode
+
+Web UI ตอนนี้เป็น multi-turn chat:
+
+- ผู้ใช้ส่งข้อความได้หลายรอบ
+- Agent ใช้บริบทบทสนทนาล่าสุดเพื่ออัปเดต Ticket draft
+- ผู้ใช้แก้ field เองได้ก่อนบันทึก
+- กดบันทึกเมื่อคิดว่าข้อมูลครบแล้วได้เลย
+- Transcript จะถูกส่งไป Google Sheet ด้วยในคอลัมน์ `transcript`
+
+## Apps Script note
+
+อย่ากด Run ที่ `doPost` ตรงๆ เพราะ Apps Script จะไม่มี `e.postData` ให้ ทำให้เกิด error ได้
+
+ถ้าต้องการทดสอบใน Apps Script editor ให้ Run ฟังก์ชัน `testDoPost` แทน

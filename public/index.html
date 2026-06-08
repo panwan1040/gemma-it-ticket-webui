@@ -9,44 +9,57 @@
   <body>
     <main class="shell">
       <section class="hero">
-        <p class="eyebrow">Local Gemma 4 12B QAT</p>
-        <h1>IT Support Triage</h1>
-        <p class="subtitle">ทดสอบ Agent รับแจ้งปัญหา ถามข้อมูลเพิ่ม สรุป Ticket และส่งเข้า Google Sheet</p>
+        <p class="eyebrow">Local Gemma 4 E4B QAT</p>
+        <h1>IT Support Chat Triage</h1>
+        <p class="subtitle">คุยเก็บบริบททีละข้อความ ให้ Agent อัปเดต Ticket draft แล้วกดบันทึกเมื่อพร้อม</p>
       </section>
 
-      <section class="panel grid">
-        <div class="card chat-card">
+      <section class="workspace">
+        <section class="card chat-card">
           <div class="card-header">
-            <h2>ข้อความจากผู้ใช้</h2>
-            <button id="sampleBtn" type="button">ใส่ตัวอย่าง</button>
+            <div>
+              <h2>บทสนทนา</h2>
+              <p id="modeBadge" class="badge">ready</p>
+            </div>
+            <button id="resetBtn" type="button" class="ghost">เริ่มใหม่</button>
           </div>
-          <textarea id="userMessage" placeholder="เช่น กล้องหน้าโกดังดูไม่ได้"></textarea>
-          <button id="triageBtn" class="primary" type="button">ให้ Agent วิเคราะห์</button>
-        </div>
 
-        <div class="card">
+          <div id="chatLog" class="chat-log"></div>
+
+          <div class="composer">
+            <textarea id="userMessage" placeholder="พิมพ์ข้อความ เช่น กล้องหน้าโกดังดูไม่ได้"></textarea>
+            <div class="composer-actions">
+              <button id="sampleBtn" type="button" class="ghost">ใส่ตัวอย่าง</button>
+              <button id="sendBtn" class="primary" type="button">ส่งข้อความ</button>
+            </div>
+          </div>
+        </section>
+
+        <aside class="card ticket-card">
           <div class="card-header">
-            <h2>Agent Reply</h2>
-            <span id="modeBadge" class="badge">ready</span>
+            <div>
+              <h2>Ticket draft</h2>
+              <p id="readyText" class="badge muted">ยังรอข้อมูล</p>
+            </div>
+            <button id="saveBtn" type="button" disabled>บันทึกลง Sheet</button>
           </div>
-          <pre id="agentReply" class="reply">รอข้อความ...</pre>
-        </div>
-      </section>
 
-      <section class="panel card ticket-card">
-        <div class="card-header">
-          <h2>Ticket ที่จะบันทึก</h2>
-          <button id="saveBtn" type="button" disabled>บันทึกลง Sheet / Local log</button>
-        </div>
-        <div class="ticket-grid">
-          <label>ประเภท<input data-field="ประเภท" /></label>
-          <label>ปัญหา<input data-field="ปัญหา" /></label>
-          <label>ผลกระทบ<textarea data-field="ผลกระทบ"></textarea></label>
-          <label>ข้อมูลที่ได้รับ<textarea data-field="ข้อมูลที่ได้รับ"></textarea></label>
-          <label>ระดับความเร่งด่วน<select data-field="ระดับความเร่งด่วน"><option>Low</option><option selected>Medium</option><option>High</option><option>Critical</option></select></label>
-          <label>ทีมที่เกี่ยวข้อง<input data-field="ทีมที่เกี่ยวข้อง" /></label>
-        </div>
-        <p id="status" class="status">ยังไม่ได้บันทึก</p>
+          <div class="ticket-grid">
+            <label>ประเภท<input data-field="ประเภท" /></label>
+            <label>ปัญหา<input data-field="ปัญหา" /></label>
+            <label>ผลกระทบ<textarea data-field="ผลกระทบ"></textarea></label>
+            <label>ข้อมูลที่ได้รับ<textarea data-field="ข้อมูลที่ได้รับ"></textarea></label>
+            <label>ระดับความเร่งด่วน<select data-field="ระดับความเร่งด่วน"><option>Low</option><option selected>Medium</option><option>High</option><option>Critical</option></select></label>
+            <label>ทีมที่เกี่ยวข้อง<input data-field="ทีมที่เกี่ยวข้อง" /></label>
+          </div>
+
+          <div class="missing-box">
+            <h3>ข้อมูลที่ยังขาด</h3>
+            <ul id="missingList"><li>ยังไม่มีบทสนทนา</li></ul>
+          </div>
+
+          <p id="status" class="status">ยังไม่ได้บันทึก</p>
+        </aside>
       </section>
     </main>
 
