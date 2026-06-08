@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="th">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Gemma IT Ticket WebUI</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero">
+        <p class="eyebrow">Local Gemma 4 12B QAT</p>
+        <h1>IT Support Triage</h1>
+        <p class="subtitle">ทดสอบ Agent รับแจ้งปัญหา ถามข้อมูลเพิ่ม สรุป Ticket และส่งเข้า Google Sheet</p>
+      </section>
+
+      <section class="panel grid">
+        <div class="card chat-card">
+          <div class="card-header">
+            <h2>ข้อความจากผู้ใช้</h2>
+            <button id="sampleBtn" type="button">ใส่ตัวอย่าง</button>
+          </div>
+          <textarea id="userMessage" placeholder="เช่น กล้องหน้าโกดังดูไม่ได้"></textarea>
+          <button id="triageBtn" class="primary" type="button">ให้ Agent วิเคราะห์</button>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h2>Agent Reply</h2>
+            <span id="modeBadge" class="badge">ready</span>
+          </div>
+          <pre id="agentReply" class="reply">รอข้อความ...</pre>
+        </div>
+      </section>
+
+      <section class="panel card ticket-card">
+        <div class="card-header">
+          <h2>Ticket ที่จะบันทึก</h2>
+          <button id="saveBtn" type="button" disabled>บันทึกลง Sheet / Local log</button>
+        </div>
+        <div class="ticket-grid">
+          <label>ประเภท<input data-field="ประเภท" /></label>
+          <label>ปัญหา<input data-field="ปัญหา" /></label>
+          <label>ผลกระทบ<textarea data-field="ผลกระทบ"></textarea></label>
+          <label>ข้อมูลที่ได้รับ<textarea data-field="ข้อมูลที่ได้รับ"></textarea></label>
+          <label>ระดับความเร่งด่วน<select data-field="ระดับความเร่งด่วน"><option>Low</option><option selected>Medium</option><option>High</option><option>Critical</option></select></label>
+          <label>ทีมที่เกี่ยวข้อง<input data-field="ทีมที่เกี่ยวข้อง" /></label>
+        </div>
+        <p id="status" class="status">ยังไม่ได้บันทึก</p>
+      </section>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>
