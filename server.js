@@ -11,6 +11,9 @@ const sheetWebhookUrl = process.env.GOOGLE_SHEET_WEBHOOK_URL || '';
 const localLogPath = path.join(process.cwd(), 'data', 'tickets.jsonl');
 
 app.use(express.json({ limit: '2mb' }));
+const staticDir = path.join(process.cwd(), 'dist');
+
+app.use(express.static(staticDir));
 app.use(express.static('public'));
 
 const systemPrompt = `You are a senior Thai IT support triage agent for an internal helpdesk.
@@ -250,6 +253,10 @@ app.post('/api/tickets', async (req, res) => {
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
+});
+
+app.get(/.*/, (_req, res) => {
+  res.sendFile(path.join(staticDir, 'index.html'));
 });
 
 app.listen(port, () => {

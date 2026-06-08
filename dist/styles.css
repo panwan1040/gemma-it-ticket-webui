@@ -1,0 +1,243 @@
+:root {
+  --ink: #17201a;
+  --muted: #5f6d64;
+  --paper: #fffaf0;
+  --card: rgba(255, 255, 255, 0.78);
+  --line: rgba(23, 32, 26, 0.14);
+  --green: #2f6f4e;
+  --amber: #d68b2a;
+  --red: #a83f39;
+  --shadow: 0 24px 80px rgba(33, 43, 34, 0.18);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  color: var(--ink);
+  font-family: Avenir Next, Sukhumvit Set, Thonburi, sans-serif;
+  background:
+    radial-gradient(circle at 8% 12%, rgba(214, 139, 42, 0.24), transparent 28rem),
+    radial-gradient(circle at 92% 8%, rgba(47, 111, 78, 0.22), transparent 24rem),
+    linear-gradient(135deg, #f8f0d9 0%, #dfeadb 48%, #f5e2c0 100%);
+}
+
+.shell {
+  width: min(1220px, calc(100% - 32px));
+  margin: 0 auto;
+  padding: 40px 0;
+}
+
+.hero { margin-bottom: 24px; }
+
+.eyebrow {
+  color: var(--green);
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+h1 {
+  margin: 0;
+  font-family: Georgia, Charter, serif;
+  font-size: clamp(38px, 7vw, 76px);
+  line-height: 0.9;
+}
+
+.subtitle {
+  color: var(--muted);
+  font-size: 18px;
+  max-width: 760px;
+}
+
+.workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(360px, 0.85fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.card {
+  border: 1px solid var(--line);
+  border-radius: 28px;
+  padding: 22px;
+  background: var(--card);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(18px);
+}
+
+.card-header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+h2, h3 { margin: 0; }
+h2 { font-size: 18px; }
+h3 { font-size: 14px; }
+
+.chat-card { min-height: 680px; }
+
+.chat-log {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  height: 420px;
+  overflow: auto;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.42);
+}
+
+.empty-state {
+  margin: auto;
+  max-width: 360px;
+  color: var(--muted);
+  text-align: center;
+  line-height: 1.5;
+}
+
+.bubble {
+  max-width: 82%;
+  padding: 13px 15px;
+  border-radius: 18px;
+  white-space: pre-wrap;
+  line-height: 1.55;
+}
+
+.bubble.user {
+  align-self: flex-end;
+  color: white;
+  background: linear-gradient(135deg, var(--green), #1e4934);
+  border-bottom-right-radius: 6px;
+}
+
+.bubble.assistant {
+  align-self: flex-start;
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.9);
+  border-bottom-left-radius: 6px;
+}
+
+.composer { margin-top: 14px; }
+
+.composer-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+textarea,
+input,
+select {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 13px;
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.82);
+  font: inherit;
+  outline: none;
+}
+
+textarea:focus,
+input:focus,
+select:focus {
+  border-color: rgba(47, 111, 78, 0.62);
+  box-shadow: 0 0 0 4px rgba(47, 111, 78, 0.12);
+}
+
+#userMessage {
+  min-height: 96px;
+  resize: vertical;
+}
+
+button {
+  border: 0;
+  border-radius: 999px;
+  padding: 12px 16px;
+  color: white;
+  background: var(--ink);
+  font-weight: 800;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+button.primary {
+  background: linear-gradient(135deg, var(--green), #1e4934);
+}
+
+button.ghost {
+  color: var(--ink);
+  background: rgba(214, 139, 42, 0.22);
+}
+
+.badge {
+  display: inline-block;
+  margin: 8px 0 0;
+  border-radius: 999px;
+  padding: 7px 11px;
+  color: var(--green);
+  background: rgba(47, 111, 78, 0.12);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.badge.muted {
+  color: var(--muted);
+  background: rgba(95, 109, 100, 0.12);
+}
+
+.badge.ready {
+  color: white;
+  background: var(--green);
+}
+
+.ticket-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.ticket-grid label {
+  display: grid;
+  gap: 7px;
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.ticket-grid textarea { min-height: 84px; }
+
+.missing-box {
+  margin-top: 16px;
+  padding: 14px;
+  border: 1px dashed rgba(47, 111, 78, 0.35);
+  border-radius: 18px;
+  background: rgba(47, 111, 78, 0.07);
+}
+
+.missing-box ul {
+  margin: 8px 0 0;
+  padding-left: 20px;
+  color: var(--muted);
+}
+
+.status {
+  margin: 16px 0 0;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+@media (max-width: 900px) {
+  .workspace { grid-template-columns: 1fr; }
+  .chat-card { min-height: auto; }
+  .chat-log { height: 360px; }
+}
