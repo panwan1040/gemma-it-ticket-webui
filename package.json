@@ -7,6 +7,8 @@
     "start": "node server.js",
     "setup": "scripts/setup.sh",
     "local": "scripts/run_local.sh",
+    "setup:windows": "powershell -ExecutionPolicy Bypass -File scripts/setup_windows.ps1",
+    "local:windows": "powershell -ExecutionPolicy Bypass -File scripts/run_local_windows.ps1",
     "dev": "vite --host 127.0.0.1 --port 5173",
     "dev:api": "node --watch server.js",
     "build": "vite build",

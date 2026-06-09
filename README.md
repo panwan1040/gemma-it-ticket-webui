@@ -26,7 +26,7 @@ The app helps internal support teams collect issue details, draft a work order, 
 
 Default setup uses Gemma E4B QAT because it is smoother on 16GB machines than 12B.
 
-## Quick start on a new machine
+## Quick start on macOS
 
 Clone the repo, then run setup once:
 
@@ -285,6 +285,86 @@ For new installs, prefer:
 ```zsh
 npm run setup
 npm run local
+```
+
+## Windows quick start
+
+Windows is supported through Ollama, not through local `llama.cpp` builds.
+
+Recommended for Windows 10/11:
+
+- PowerShell
+- winget
+- Ollama for Windows
+- Node.js LTS
+- Optional Poppler for PDF OCR
+
+Clone the repo, then run setup once:
+
+```powershell
+npm run setup:windows
+```
+
+This command will:
+
+- create `.env` from `.env.example` if missing
+- install/check Node.js and Ollama through winget
+- install/check Poppler for PDF OCR
+- set `LLM_BASE_URL=http://127.0.0.1:11434/v1`
+- set the main model to `hf.co/google/gemma-4-E4B-it-qat-q4_0-gguf`
+- pull the main model through Ollama
+- pull Typhoon OCR if enabled
+- install npm dependencies
+- build the web UI
+
+Run everything:
+
+```powershell
+npm run local:windows
+```
+
+Open:
+
+```text
+http://127.0.0.1:3000
+```
+
+Windows options:
+
+```powershell
+$env:MODEL_SIZE='12b'; npm run setup:windows
+$env:INSTALL_OCR='0'; npm run setup:windows
+```
+
+## Windows portable folder
+
+For quick release-style installation, use:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\portable\windows\Install.ps1
+powershell -ExecutionPolicy Bypass -File .\portable\windows\Run.ps1
+```
+
+The portable folder does not commit model files into git. It downloads models on first install.
+
+Windows backend notes:
+
+- Main LLM backend: Ollama OpenAI-compatible API
+- Main LLM URL: `http://127.0.0.1:11434/v1`
+- OCR backend: Ollama native API
+- Default Windows model: `hf.co/google/gemma-4-E4B-it-qat-q4_0-gguf`
+- Default OCR model: `scb10x/typhoon-ocr1.5-3b`
+
+Ollama OpenAI compatibility is documented here:
+
+```text
+https://docs.ollama.com/openai
+```
+
+Ollama with Hugging Face GGUF models is documented here:
+
+```text
+https://huggingface.co/docs/hub/en/ollama
 ```
 
 ## Notes for open-source reuse
