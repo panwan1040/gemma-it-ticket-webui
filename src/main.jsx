@@ -103,6 +103,14 @@ function readFileAsBase64(file) {
     reader.readAsDataURL(file);
   });
 }
+function looksLikeTicketIntent(text) {
+  return /(เปิด|สร้าง|บันทึก|แจ้ง)(\s*)(ticket|ทิกเก็ต|เคส|ใบงาน|ปัญหา)|ช่วยเปิด|ส่งให้ IT|ส่งให้ทีม IT|แจ้งซ่อม|แจ้งไอที/i.test(String(text || ''));
+}
+function goToTicketIntake(payload) {
+  sessionStorage.setItem('ticket-handoff', JSON.stringify(payload));
+  window.history.pushState({}, '', '/');
+  window.dispatchEvent(new PopStateEvent('popstate'));
+}
 
 function Button({ children, variant = 'primary', size = 'md', className = '', ...props }) {
   return <motion.button
@@ -315,6 +323,7 @@ function TicketIntakePage({ config }) {
   const [lastAgentReply, setLastAgentReply] = useState('');
   const [attachments, setAttachments] = useState([]);
   const [uploadingAttachment, setUploadingAttachment] = useState(false);
+  const [handoffNotice, setHandoffNotice] = useState('');
   const [sheetOpen, setSheetOpen] = useState(false);
   const examples = ['เครื่องปริ้นพิมพ์ไม่ได้', 'Wi-Fi ใช้งานไม่ได้', 'คอมเปิดไม่ติด', 'กล้องดูไม่ได้', 'เข้าอีเมลไม่ได้'];
   const summary = useMemo(() => buildChatSummary(ticket, missingFields, saveState === 'saved', saveStatus), [ticket, missingFields, saveState, saveStatus]);
@@ -347,13 +356,13 @@ function TicketIntakePage({ config }) {
       setUploadingAttachment(false);
     }
   }
-  async function sendMessage() {
-    const userText = input.trim();
-    const fileContext = attachmentContext();
+  async function submitTicketMessage(rawText, rawAttachments = attachments, options = {}) {
+    const userText = String(rawText || '').trim();
+    const fileContext = rawAttachments.length ? `ไฟล์แนบ:\n${rawAttachments.map((item, index) => `${index + 1}. ${item.name}${item.ocrText ? `\nข้อความ OCR:\n${item.ocrText.slice(0, 2200)}` : `\nบันทึกไฟล์ไว้ที่ ${item.path || ''}`}`).join('\n\n')}` : '';
     if ((!userText && !fileContext) || isThinking) return;
     const content = [userText, fileContext].filter(Boolean).join('\n\n');
     const displayContent = userText || 'แนบไฟล์ให้ตรวจสอบ';
-    const visibleMessages = [...messages, { role: 'user', content, displayContent, attachments }];
+    const visibleMessages = [...messages, { role: 'user', content, displayContent, attachments: rawAttachments }];
     const nextMessages = [...visibleMessages.map(({ role, content }) => ({ role, content }))];
     setMessages(visibleMessages);
     setInput('');
@@ -376,6 +385,11 @@ function TicketIntakePage({ config }) {
       setMode(data.mode || 'done');
       setMissingFields(data.missingFields || []);
       setLastAgentReply(reply);
+      setAttachments(rawAttachments);
+      if (options.openDraft) {
+        setHandoffNotice('ร่างใบงานจากแชท AI แล้ว แต่ยังไม่ได้บันทึกเป็น ticket จริง จนกว่าจะกด “บันทึกใบงาน”');
+        setSheetOpen(true);
+      }
     } catch (error) {
       setMode('error');
       setMessages([...visibleMessages, { role: 'assistant', content: `เกิดข้อผิดพลาดครับ: ${error.message}` }]);
@@ -383,6 +397,22 @@ function TicketIntakePage({ config }) {
       setIsThinking(false);
     }
   }
+  async function sendMessage() {
+    await submitTicketMessage(input, attachments);
+  }
+  useEffect(() => {
+    const raw = sessionStorage.getItem('ticket-handoff');
+    if (!raw) return;
+    sessionStorage.removeItem('ticket-handoff');
+    try {
+      const handoff = JSON.parse(raw);
+      const handoffAttachments = Array.isArray(handoff.attachments) ? handoff.attachments : [];
+      setAttachments(handoffAttachments);
+      setMessages([{ role: 'assistant', content: 'ผมย้ายมาหน้าแจ้งปัญหาให้แล้วครับ กำลังร่างใบงานจากข้อมูลที่คุณส่งมา' }]);
+      setHandoffNotice('กำลังนำข้อมูลจากแชท AI มาร่างใบงาน ยังไม่ได้บันทึกเป็น ticket จริง');
+      setTimeout(() => submitTicketMessage(handoff.text || '', handoffAttachments, { openDraft: true }), 50);
+    } catch {}
+  }, []);
   async function saveTicket() {
     setIsSaving(true);
     setSaveState('saving');
@@ -432,6 +462,7 @@ function TicketIntakePage({ config }) {
     setSaveState('idle');
     setLastAgentReply('');
     setAttachments([]);
+    setHandoffNotice('');
   }
 
   return <div className="page chat-page">
@@ -440,6 +471,7 @@ function TicketIntakePage({ config }) {
       description="พิมพ์ปัญหาสั้นๆ ได้เลย ระบบจะช่วยถามต่อทีละข้อจนพอเปิดใบงาน"
       actions={<><StatusPill tone={mode === 'error' ? 'danger' : mode === 'thinking' ? 'info' : 'ok'}>{friendlyStatus(mode)}</StatusPill><Button variant="secondary" onClick={resetChat}><RefreshCcw size={16} />เปิดเคสใหม่</Button></>}
     />
+    {handoffNotice ? <div className="handoff-banner"><strong>ร่างใบงาน</strong><span>{handoffNotice}</span><Button variant="secondary" size="sm" onClick={() => setSheetOpen(true)}>ดูร่างใบงาน</Button></div> : null}
     <section className="chat-canvas">
       <div className="chat-stream">
         {messages.length ? messages.map((item, index) => <ChatBubble key={`${item.role}-${index}`} item={item} />) : <EmptyState icon={ClipboardList} title="เริ่มจากอาการที่พบ" description="ตัวอย่าง: เครื่องปริ้นพิมพ์ไม่ได้, Wi‑Fi ใช้งานไม่ได้, คอมเปิดไม่ติด หรือกล้องดูไม่ได้">
@@ -510,6 +542,12 @@ function KnowledgeChatPage() {
     const displayContent = userText || 'ช่วยอ่านและสรุปไฟล์แนบนี้ให้หน่อยครับ';
     const visibleNext = [...messages, { role: 'user', content, displayContent, attachments }];
     const next = [...visibleNext.map(({ role, content }) => ({ role, content }))];
+    if (looksLikeTicketIntent(userText)) {
+      setMessages([...visibleNext, { role: 'assistant', content: 'ได้ครับ ผมจะย้ายไปหน้าแจ้งปัญหาเพื่อร่างใบงานจากข้อมูลนี้ให้ก่อนนะครับ ยังไม่ถือว่าบันทึก ticket จริงจนกว่าจะกด “บันทึกใบงาน”' }]);
+      setInput('');
+      setTimeout(() => goToTicketIntake({ text: content, attachments }), 350);
+      return;
+    }
     setMessages(visibleNext);
     setInput('');
     setIsThinking(true);
