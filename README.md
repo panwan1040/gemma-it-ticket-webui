@@ -130,6 +130,7 @@ APP_DESCRIPTION=Collect issue details, draft tickets, and save them to your supp
 
 LLM_BASE_URL=http://127.0.0.1:18080/v1
 LLM_MODEL=gemma4-e4b-qat
+LLM_TIMEOUT_MS=25000
 PORT=3000
 
 GOOGLE_SHEET_WEBHOOK_URL=
@@ -155,6 +156,7 @@ Secrets stay server-side:
 - Uploaded files are stored under `data/attachments/` and are not served as public static files. Admin downloads go through `/api/admin/attachments/:day/:filename`.
 - Ticket saves generate IDs like `IT-YYYYMMDD-0001` and start with status `New`.
 - Rate limits are in-memory and configurable through `.env`. Defaults: general 120/15m, chat 30/15m, upload/OCR 10/15m, tickets 30/15m.
+- LLM calls time out using `LLM_TIMEOUT_MS` so the UI can fall back instead of waiting forever.
 - RAG prompt context is capped by `RAG_MAX_DOCS`, `RAG_MAX_CHARS_PER_DOC`, and `RAG_MAX_TOTAL_CONTEXT_CHARS`.
 
 ## Production runbook

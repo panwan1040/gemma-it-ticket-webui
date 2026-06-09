@@ -18,6 +18,7 @@ if (isProduction && unsafeAdminAuthValues.has(configuredAdminAuth)) {
 const adminAuth = configuredAdminAuth || 'admin:dev-local-only';
 const port = Number(process.env.PORT || 3000);
 const llmBaseUrl = process.env.LLM_BASE_URL || 'http://127.0.0.1:18080/v1';
+const llmTimeoutMs = Math.max(5000, Math.min(Number(process.env.LLM_TIMEOUT_MS || 25000), 120000));
 let llmModel = process.env.LLM_MODEL || 'gemma4-e4b-qat';
 const sheetWebhookUrl = process.env.GOOGLE_SHEET_WEBHOOK_URL || '';
 const localLogPath = path.join(process.cwd(), 'data', 'tickets.jsonl');
@@ -94,7 +95,10 @@ Style:
 - Prefer natural concise questions such as asking for callback phone, exact building/area, department, affected device, and whether there is anything else to add.
 - Prioritize questions that change urgency, routing, asset identification, or first action.
 - If enough information exists, stop asking, say IT has enough information to draft the ticket, mention that IT will contact the requester back after the ticket is saved, summarize known details as bullets, and ask if there is anything else to add.
+- Never say the ticket has already been created, opened, saved, or recorded. The app only saves after the user clicks "บันทึกใบงาน" and receives a ticket ID. Before that, say only that the draft is ready to save.
 - If the user only attaches a file/image/PDF or OCR text without clearly describing the issue, acknowledge the attachment briefly and ask exactly one question: what issue should IT check from this file? Do not say you are unsure whether it is related to IT. Do not list example questions.
+- If the user asks what an attached file is, asks to summarize/check/read the file, or says "นี่คืออะไร", first summarize the readable attachment content in 2-4 short bullet points, then ask one short question: do they want IT to open a work order from this file? Keep isReadyToSave false unless they clearly ask to open/save the ticket.
+- If an attachment is not an IT issue, do not reject it abruptly. Explain briefly what the file appears to be, then ask what IT action they want, such as storing it as evidence, checking access, printing, email delivery, or opening a request.
 
 Return exactly one JSON object:
 {
@@ -131,6 +135,20 @@ Urgency rules:
 - High: multiple users/areas affected, critical-area camera down with no workaround.
 - Medium: one camera/area/device affected, monitoring degraded but work continues.
 - Low: minor issue, request, intermittent issue with workaround.`;
+
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = llmTimeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (error) {
+    if (error.name === 'AbortError') throw new Error(`request timed out after ${timeoutMs}ms`);
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 function tokenize(text) {
   return text.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((token) => token.length >= 2);
@@ -184,6 +202,8 @@ function summarizeAttachments(attachments = []) {
   return attachments.map((item, index) => {
     const lines = [`${index + 1}. ${item.name || 'attachment'}`];
     if (item.path) lines.push(`ไฟล์: ${item.path}`);
+    if (item.ocrStatus) lines.push(`สถานะ OCR: ${item.ocrStatus}`);
+    if (item.ocrError) lines.push(`OCR error: ${String(item.ocrError).slice(0, 180)}`);
     if (item.ocrText) lines.push(`ข้อความที่อ่านได้: ${String(item.ocrText).slice(0, 1200)}`);
     return lines.join(' | ');
   }).join('\n');
@@ -515,6 +535,22 @@ function normalizeTicket(ticket, fallbackTicket) {
   };
 }
 
+function hasReadyIntent(text) {
+  return /พอแล้ว|เปิด\s*(ticket|ทิกเก็ต|ใบงาน)|สร้าง\s*(ticket|ทิกเก็ต|ใบงาน)|บันทึก\s*(ticket|ทิกเก็ต|ใบงาน)|ดำเนินการได้เลย|ส่งเรื่องได้เลย|save\s*(ticket)?|submit/i.test(text || '');
+}
+
+function isActionableTicket(ticket) {
+  const problem = String(ticket?.['ปัญหา'] || '').trim();
+  const impact = String(ticket?.['ผลกระทบ'] || '').trim();
+  const info = String(ticket?.['ข้อมูลที่ได้รับ'] || '').trim();
+  const weakImpact = /รอข้อมูลเพิ่มเติม|ไม่ทราบ|ยังไม่ได้|ต้องรอ/i.test(impact);
+  return problem.length >= 12 && info.length >= 40 && impact.length >= 8 && !weakImpact;
+}
+
+function buildReadyReply(ticket) {
+  return `ข้อมูลเพียงพอสำหรับร่างใบงานแล้วครับ ยังไม่ถือว่าบันทึกจริงจนกว่าจะกด “บันทึกใบงาน” และได้รับเลข ticket\n\nสรุปข้อมูล:\n- ประเภท: ${ticket['ประเภท']}\n- ปัญหา: ${ticket['ปัญหา']}\n- ผลกระทบ: ${ticket['ผลกระทบ']}\n- ระดับความเร่งด่วน: ${ticket['ระดับความเร่งด่วน']}\n- ทีมที่เกี่ยวข้อง: ${ticket['ทีมที่เกี่ยวข้อง']}\n\nมีข้อมูลเพิ่มเติมอีกไหมครับ`;
+}
+
 function fallbackTriage(message, history = []) {
   const allText = [...history.map((item) => item.content), message].join('\n').trim();
   const isCctv = /กล้อง|cctv|nvr|dvr|โกดัง|warehouse|no signal|offline/i.test(allText);
@@ -540,16 +576,17 @@ function fallbackTriage(message, history = []) {
   };
 }
 
-async function callLocalGemma(messages) {
+async function callLocalGemma(messages, attachments = []) {
   const history = messages.filter((item) => item.role === 'user' || item.role === 'assistant');
   const latestUser = [...history].reverse().find((item) => item.role === 'user')?.content || '';
   const conversationText = history.map((item) => `${item.role}: ${item.content}`).join('\n');
-  const rag = await searchKnowledge(conversationText || latestUser);
+  const attachmentText = summarizeAttachments(attachments);
+  const rag = await searchKnowledge([conversationText || latestUser, attachmentText].filter(Boolean).join('\n'));
   const fallback = fallbackTriage(latestUser, history);
 
-  const userInstruction = `${rag.context ? `Relevant Knowledge:\n${rag.context}\n\n` : ''}Conversation so far:\n${conversationText}\n\nอัปเดต ticket จากบริบททั้งหมดด้านบน ตอบกลับเป็น JSON object เท่านั้น`;
+  const userInstruction = `${rag.context ? `Relevant Knowledge:\n${rag.context}\n\n` : ''}${attachmentText ? `Attachments:\n${attachmentText}\n\n` : ''}Conversation so far:\n${conversationText}\n\nอัปเดต ticket จากบริบททั้งหมดด้านบน ตอบกลับเป็น JSON object เท่านั้น`;
 
-  const response = await fetch(`${llmBaseUrl}/chat/completions`, {
+  const response = await fetchWithTimeout(`${llmBaseUrl}/chat/completions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -572,11 +609,14 @@ async function callLocalGemma(messages) {
   if (start === -1 || end === -1 || end <= start) throw new Error(`LLM returned non-JSON content: ${content.slice(0, 160)}`);
 
   const parsed = JSON.parse(content.slice(start, end + 1));
+  const ticket = normalizeTicket(parsed.ticket, fallback.ticket);
+  const readyByUserConfirmation = hasReadyIntent(latestUser) && isActionableTicket(ticket);
+  const missingFields = Array.isArray(parsed.missingFields) ? parsed.missingFields : fallback.missingFields;
   return {
-    agentReply: parsed.agentReply || fallback.agentReply,
-    isReadyToSave: Boolean(parsed.isReadyToSave),
-    missingFields: Array.isArray(parsed.missingFields) ? parsed.missingFields : fallback.missingFields,
-    ticket: normalizeTicket(parsed.ticket, fallback.ticket),
+    agentReply: readyByUserConfirmation ? buildReadyReply(ticket) : (parsed.agentReply || fallback.agentReply),
+    isReadyToSave: readyByUserConfirmation || Boolean(parsed.isReadyToSave),
+    missingFields: readyByUserConfirmation ? [] : missingFields,
+    ticket,
     ragContext: { count: rag.count, items: rag.items }
   };
 }
@@ -817,7 +857,7 @@ app.post('/api/admin/setup/test-sheet', requireAdmin, async (_req, res) => {
 });
 app.post('/api/admin/setup/test-llm', requireAdmin, async (_req, res) => {
   try {
-    const response = await fetch(`${llmBaseUrl}/chat/completions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: llmModel, max_tokens: 32, messages: [{ role: 'user', content: 'ตอบคำว่า ok สั้นๆ' }] }) });
+    const response = await fetchWithTimeout(`${llmBaseUrl}/chat/completions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: llmModel, max_tokens: 32, messages: [{ role: 'user', content: 'ตอบคำว่า ok สั้นๆ' }] }) });
     res.json({ ok: response.ok, detail: response.ok ? 'LLM test passed' : `HTTP ${response.status}` });
   } catch (error) { res.status(500).json({ error: error.message }); }
 });
@@ -1014,7 +1054,8 @@ app.post('/api/attachments', uploadLimiter, async (req, res) => {
     let ocrText = '';
     let ocrOk = false;
     let ocrError = '';
-    if (isOcrSupportedFile(file.name, file.type)) {
+    const ocrSupported = isOcrSupportedFile(file.name, file.type);
+    if (ocrSupported) {
       try {
         const status = await getTyphoonOcrStatus();
         if (!status.available) await startTyphoonOcrWorker();
@@ -1025,6 +1066,7 @@ app.post('/api/attachments', uploadLimiter, async (req, res) => {
         ocrError = error.message;
       }
     }
+    const ocrStatus = ocrSupported ? (ocrOk ? 'readable' : 'unreadable') : 'not-supported';
 
     res.json({
       ok: true,
@@ -1035,6 +1077,8 @@ app.post('/api/attachments', uploadLimiter, async (req, res) => {
         size: Math.round(sizeMb * 1024 * 1024),
         path: `data/attachments/${relativePath}`,
         downloadPath: `/api/admin/attachments/${day}/${safeName}`,
+        ocrSupported,
+        ocrStatus,
         ocrOk,
         ocrText,
         ocrError
@@ -1067,7 +1111,7 @@ app.post('/api/chat', chatLimiter, async (req, res) => {
   let result;
   let mode = 'local-gemma';
   try {
-    result = await callLocalGemma(cleanMessages);
+    result = await callLocalGemma(cleanMessages, attachments);
   } catch {
     mode = 'fallback-rules';
     const latestUser = [...cleanMessages].reverse().find((item) => item.role === 'user')?.content || '';
@@ -1082,13 +1126,15 @@ async function completeKnowledgeAnswer({ conversation, ragContext, attachmentTex
 Answer in Thai unless the user asks for English. You can chat naturally like a normal AI assistant.
 If Attached File Text is present, use it first. If Relevant Knowledge is present, use it when relevant.
 If the user asks a general question and no document/knowledge is relevant, answer normally from general knowledge and say briefly when you are not relying on local documents.
-You know this app has two main user-facing capabilities: IT ticket intake at the main page and general/document AI chat here. If the user wants to open/create/save an IT ticket, tell them the app can move the conversation to the ticket intake page to draft a ticket.
+You know this app has two main user-facing capabilities: IT ticket intake at the main page and general/document AI chat here.
+If the user asks how to open a ticket, explain that they should go to "แจ้งปัญหา" or type a clear ticket request so the app can draft a work order.
+Do not claim that you opened, saved, moved, or submitted a ticket unless the UI explicitly confirms a ticket ID.
 If OCR/file text is unavailable but the user asks about the file, say clearly that the file was received but readable text is not available, then suggest uploading a clearer file or enabling OCR.
 Do not invent local policy, asset names, contacts, or exact internal procedures that are not in the knowledge or attached text.
 When useful, structure the answer with short headings, bullet points, and GitHub-Flavored Markdown tables. Do not use raw HTML tables.`;
   const context = `Attached File Text:\n${attachmentText || '(no attached readable text)'}\n\nRelevant Knowledge:\n${ragContext || '(no direct matches)'}\n\nConversation:\n${conversation}`;
-  const call = async (messages, maxTokens = 2200) => {
-    const response = await fetch(`${llmBaseUrl}/chat/completions`, {
+  const call = async (messages, maxTokens = 1100) => {
+    const response = await fetchWithTimeout(`${llmBaseUrl}/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model: llmModel, temperature: detailed ? 0.15 : 0.2, max_tokens: maxTokens, messages })
@@ -1103,16 +1149,12 @@ When useful, structure the answer with short headings, bullet points, and GitHub
     return await call([
       { role: 'system', content: baseSystem },
       { role: 'user', content: `${context}\n\nตอบคำถามล่าสุด ถ้ามีไฟล์แนบหรือคลังความรู้ให้ใช้อ้างอิงก่อน ถ้าไม่เกี่ยวข้องให้ตอบแบบผู้ช่วย AI ทั่วไป` }
-    ]);
+    ], 900);
   }
-  const draft = await call([
-    { role: 'system', content: `${baseSystem}\nCreate a careful draft answer. Focus on coverage and evidence. Do not show hidden reasoning.` },
-    { role: 'user', content: `${context}\n\nสร้างคำตอบร่างแรกที่ละเอียด ถ้ามีไฟล์แนบหรือคลังความรู้ให้ใช้อ้างอิงก่อน ถ้าเป็นคำถามทั่วไปให้ตอบตามความรู้ทั่วไป` }
-  ], 2400);
   return await call([
-    { role: 'system', content: `${baseSystem}\nYou are now the reviewer and final editor. Improve correctness, clarity, and usefulness. Remove unsupported claims. Keep the final answer readable with headings and bullets. Do not mention internal draft/review steps.` },
-    { role: 'user', content: `${context}\n\nDraft answer:\n${draft}\n\nตรวจทานและเรียบเรียงเป็นคำตอบสุดท้ายที่ชัดเจน มีเหตุผล ไม่มั่ว และบอกให้ชัดเมื่อไม่ได้อ้างอิงเอกสาร local` }
-  ], 2600);
+    { role: 'system', content: `${baseSystem}\nAnswer in a more complete but still concise way. Use headings, bullets, and tables only when they improve readability. Prioritize correctness and do not mention hidden draft/review steps.` },
+    { role: 'user', content: `${context}\n\nตอบคำถามล่าสุดแบบละเอียดพอดี อ่านง่าย มีเหตุผล และบอกให้ชัดเมื่อไม่ได้อ้างอิงเอกสาร local` }
+  ], 1500);
 }
 
 app.post('/api/knowledge-chat', chatLimiter, async (req, res) => {
@@ -1182,6 +1224,7 @@ app.get(/.*/, (_req, res) => {
 if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(import.meta.url).pathname)) {
   console.log(`[startup] Admin auth: ${configuredAdminAuth ? 'configured' : 'development fallback active'}${isProduction ? ' (production)' : ' (development)'}`);
   console.log(`[startup] JSON body limit: ${jsonBodyLimitMb}mb`);
+  console.log(`[startup] LLM timeout: ${llmTimeoutMs}ms`);
   app.listen(port, () => {
     console.log(`Gemma IT Ticket WebUI: http://127.0.0.1:${port}`);
   });
