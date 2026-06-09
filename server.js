@@ -23,6 +23,7 @@ const sheetWebhookUrl = process.env.GOOGLE_SHEET_WEBHOOK_URL || '';
 const localLogPath = path.join(process.cwd(), 'data', 'tickets.jsonl');
 const ragIndexPath = path.join(process.cwd(), 'data', 'rag-index.json');
 const attachmentDir = path.join(process.cwd(), 'data', 'attachments');
+const adminAuditPath = path.join(process.cwd(), 'data', 'admin-audit.jsonl');
 const staticDir = path.join(process.cwd(), 'dist');
 const knowledgeDir = path.join(process.cwd(), 'knowledge');
 const appConfig = {
@@ -133,6 +134,20 @@ Urgency rules:
 
 function tokenize(text) {
   return text.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((token) => token.length >= 2);
+}
+
+
+async function auditAdmin(req, action, target, success, detail = '') {
+  const row = {
+    timestamp: new Date().toISOString(),
+    action,
+    target: String(target || ''),
+    success: Boolean(success),
+    ip: req.ip || req.socket?.remoteAddress || '',
+    detail: String(detail || '').slice(0, 240)
+  };
+  await fs.mkdir(path.dirname(adminAuditPath), { recursive: true });
+  await fs.appendFile(adminAuditPath, `${JSON.stringify(row)}\n`, 'utf8').catch(() => {});
 }
 
 function requireAdmin(req, res, next) {
@@ -683,8 +698,9 @@ app.post('/api/admin/knowledge/folder', requireAdmin, async (req, res) => {
   try {
     const folder = safeKnowledgeFolderName(req.body?.name);
     await fs.mkdir(path.join(knowledgeDir, folder), { recursive: true });
+    await auditAdmin(req, 'knowledge.folder.create', folder, true);
     res.json({ ok: true, folder });
-  } catch (error) { res.status(400).json({ error: error.message }); }
+  } catch (error) { await auditAdmin(req, 'knowledge.folder.create', req.body?.name, false, error.message); res.status(400).json({ error: error.message }); }
 });
 
 app.get('/api/admin/knowledge', requireAdmin, async (_req, res) => {
@@ -720,8 +736,10 @@ app.put('/api/admin/knowledge/file', requireAdmin, async (req, res) => {
     await fs.mkdir(path.dirname(target.full), { recursive: true });
     await fs.writeFile(target.full, content, 'utf8');
     const index = await rebuildKnowledgeIndex();
+    await auditAdmin(req, 'knowledge.file.update', target.clean, true);
     res.json({ ok: true, path: target.clean, index });
   } catch (error) {
+    await auditAdmin(req, 'knowledge.file.update', req.body?.path || `${req.body?.folder || ''}/${req.body?.name || ''}`, false, error.message);
     res.status(400).json({ error: error.message });
   }
 });
@@ -744,8 +762,10 @@ app.post('/api/admin/knowledge/upload', requireAdmin, async (req, res) => {
     }
 
     const index = await rebuildKnowledgeIndex();
+    await auditAdmin(req, 'knowledge.upload', saved.join(','), true);
     res.json({ ok: true, saved, index });
   } catch (error) {
+    await auditAdmin(req, 'knowledge.upload', 'upload', false, error.message);
     res.status(400).json({ error: error.message });
   }
 });
@@ -823,8 +843,10 @@ app.post('/api/admin/knowledge/parse-ocr', requireAdmin, uploadLimiter, async (r
       return;
     }
     const note = await parseWithTyphoonOcr(file);
+    await auditAdmin(req, 'ocr.parse', file.name, true);
     res.json({ ok: true, ...note, note: 'Review the OCR draft, then click Save + Reindex to add it to RAG.' });
   } catch (error) {
+    await auditAdmin(req, 'ocr.parse', req.body?.file?.name || 'file', false, error.message);
     res.status(400).json({ error: error.message });
   }
 });
@@ -836,16 +858,21 @@ app.delete('/api/admin/knowledge/file', requireAdmin, async (req, res) => {
       if (error.code !== 'ENOENT') throw error;
     });
     const index = await rebuildKnowledgeIndex();
+    await auditAdmin(req, 'knowledge.file.delete', target.clean, true);
     res.json({ ok: true, path: target.clean, index });
   } catch (error) {
+    await auditAdmin(req, 'knowledge.file.delete', req.body?.path || `${req.body?.folder || ''}/${req.body?.name || ''}`, false, error.message);
     res.status(400).json({ error: error.message });
   }
 });
 
 app.post('/api/admin/knowledge/reindex', requireAdmin, async (_req, res) => {
   try {
-    res.json({ ok: true, index: await rebuildKnowledgeIndex() });
+    const index = await rebuildKnowledgeIndex();
+    await auditAdmin(_req, 'knowledge.reindex', 'knowledge', true);
+    res.json({ ok: true, index });
   } catch (error) {
+    await auditAdmin(_req, 'knowledge.reindex', 'knowledge', false, error.message);
     res.status(500).json({ error: error.message });
   }
 });
@@ -888,6 +915,7 @@ app.patch('/api/admin/tickets/:ticketId', requireAdmin, async (req, res) => {
   if (index === -1) return res.status(404).json({ error: 'ticket not found' });
   rows[index] = { ...rows[index], status: normalizeTicketStatus(req.body?.status), updatedAt: new Date().toISOString() };
   await writeTicketRows(rows);
+  await auditAdmin(req, 'ticket.status.update', req.params.ticketId, true, rows[index].status);
   res.json({ ok: true, ticket: rows[index] });
 });
 
@@ -896,8 +924,10 @@ app.get('/api/admin/attachments/:day/:filename', requireAdmin, async (req, res) 
   try {
     const full = safeAttachmentPath(req.params.day, req.params.filename);
     await fs.access(full);
+    await auditAdmin(req, 'attachment.download', `${req.params.day}/${req.params.filename}`, true);
     res.download(full);
   } catch (error) {
+    await auditAdmin(req, 'attachment.download', `${req.params.day}/${req.params.filename}`, false, error.message);
     res.status(404).json({ error: 'attachment not found' });
   }
 });
@@ -946,6 +976,7 @@ app.post('/api/models/select', requireAdmin, async (req, res) => {
     return;
   }
   llmModel = model;
+  await auditAdmin(req, 'model.select', model, true);
   res.json({ ok: true, selected: llmModel, note: 'Model alias updated for API calls. If llama-server is running a different model, restart it with the matching start command.' });
 });
 

@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+        env:
+          ADMIN_AUTH: admin:ci-test-secret
+          NODE_ENV: test
+
+      - name: Build
+        run: npm run build
+
+      - name: Check
+        run: npm run check
+        env:
+          ADMIN_AUTH: admin:ci-test-secret
+          NODE_ENV: test
