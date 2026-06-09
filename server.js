@@ -5,9 +5,17 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
+import { randomUUID } from 'node:crypto';
 
 const app = express();
 const execFileAsync = promisify(execFile);
+const isProduction = process.env.NODE_ENV === 'production';
+const unsafeAdminAuthValues = new Set(['', 'admin:change-me', 'admin:icetong', 'admin:admin', 'admin:password']);
+const configuredAdminAuth = process.env.ADMIN_AUTH || '';
+if (isProduction && unsafeAdminAuthValues.has(configuredAdminAuth)) {
+  throw new Error('ADMIN_AUTH must be configured to a non-default value before starting in production.');
+}
+const adminAuth = configuredAdminAuth || 'admin:dev-local-only';
 const port = Number(process.env.PORT || 3000);
 const llmBaseUrl = process.env.LLM_BASE_URL || 'http://127.0.0.1:18080/v1';
 let llmModel = process.env.LLM_MODEL || 'gemma4-e4b-qat';
@@ -17,7 +25,6 @@ const ragIndexPath = path.join(process.cwd(), 'data', 'rag-index.json');
 const attachmentDir = path.join(process.cwd(), 'data', 'attachments');
 const staticDir = path.join(process.cwd(), 'dist');
 const knowledgeDir = path.join(process.cwd(), 'knowledge');
-const adminAuth = process.env.ADMIN_AUTH || 'admin:icetong';
 const appConfig = {
   appName: process.env.APP_NAME || 'Local AI Helpdesk',
   appTagline: process.env.APP_TAGLINE || 'AI-assisted ticket intake for internal support teams',
@@ -27,13 +34,46 @@ const typhoonBaseUrl = process.env.TYPHOON_OCR_BASE_URL || 'http://127.0.0.1:114
 const typhoonModel = process.env.TYPHOON_OCR_MODEL || 'scb10x/typhoon-ocr1.5-3b';
 const typhoonMaxPdfPages = Math.max(1, Math.min(Number(process.env.TYPHOON_OCR_MAX_PDF_PAGES || 3), 10));
 const typhoonMaxUploadMb = Math.max(1, Math.min(Number(process.env.TYPHOON_OCR_MAX_UPLOAD_MB || 24), 80));
+const jsonBodyLimitMb = Math.max(1, Math.min(Number(process.env.JSON_BODY_LIMIT_MB || Math.max(32, typhoonMaxUploadMb + 8)), 120));
+const ragMaxDocs = Math.max(1, Math.min(Number(process.env.RAG_MAX_DOCS || 4), 12));
+const ragMaxCharsPerDoc = Math.max(400, Math.min(Number(process.env.RAG_MAX_CHARS_PER_DOC || 1600), 8000));
+const ragMaxTotalContextChars = Math.max(1000, Math.min(Number(process.env.RAG_MAX_TOTAL_CONTEXT_CHARS || 6000), 24000));
 const ollamaAppBin = '/Applications/Ollama.app/Contents/Resources/ollama';
 
 
-app.use(express.json({ limit: `${Math.max(32, typhoonMaxUploadMb + 8)}mb` }));
+app.use(express.json({ limit: `${jsonBodyLimitMb}mb` }));
 app.use(express.static(staticDir));
-app.use('/attachments', express.static(attachmentDir));
 app.use(express.static('public'));
+
+
+function makeRateLimiter({ windowMs, max, name }) {
+  const hits = new Map();
+  return (req, res, next) => {
+    const now = Date.now();
+    const key = `${req.ip || req.socket?.remoteAddress || 'local'}:${name}`;
+    const current = hits.get(key) || { count: 0, resetAt: now + windowMs };
+    if (current.resetAt <= now) {
+      current.count = 0;
+      current.resetAt = now + windowMs;
+    }
+    current.count += 1;
+    hits.set(key, current);
+    res.setHeader('RateLimit-Limit', String(max));
+    res.setHeader('RateLimit-Remaining', String(Math.max(0, max - current.count)));
+    res.setHeader('RateLimit-Reset', String(Math.ceil(current.resetAt / 1000)));
+    if (current.count > max) {
+      res.status(429).json({ error: 'rate limit exceeded', retryAfterSeconds: Math.ceil((current.resetAt - now) / 1000) });
+      return;
+    }
+    next();
+  };
+}
+const rateWindowMs = Number(process.env.RATE_LIMIT_WINDOW_MS || 15 * 60 * 1000);
+const generalLimiter = makeRateLimiter({ windowMs: rateWindowMs, max: Number(process.env.RATE_LIMIT_GENERAL_MAX || 120), name: 'general' });
+const chatLimiter = makeRateLimiter({ windowMs: rateWindowMs, max: Number(process.env.RATE_LIMIT_CHAT_MAX || 30), name: 'chat' });
+const uploadLimiter = makeRateLimiter({ windowMs: rateWindowMs, max: Number(process.env.RATE_LIMIT_UPLOAD_MAX || 10), name: 'upload' });
+const ticketLimiter = makeRateLimiter({ windowMs: rateWindowMs, max: Number(process.env.RATE_LIMIT_TICKET_MAX || 30), name: 'ticket' });
+app.use('/api', generalLimiter);
 
 const systemPrompt = `You are a senior Thai IT Support Admin for an internal helpdesk.
 You are the first-line intake agent for every IT-related issue users may report, including printers, computers, network, Wi-Fi, email, software, accounts, access control, CCTV/NVR, and vendor-supported systems.
@@ -110,17 +150,25 @@ function safeAttachmentName(name) {
   const original = String(name || 'attachment');
   const ext = original.includes('.') ? original.split('.').pop().toLowerCase().replace(/[^a-z0-9]/g, '') : 'bin';
   const base = slugifyFileName(original) || 'attachment';
-  return `${Date.now()}-${base}.${ext || 'bin'}`;
+  return `${randomUUID()}-${base}.${ext || 'bin'}`;
 }
 
-function attachmentPublicPath(relativePath) {
-  return `/attachments/${String(relativePath || '').split('/').map(encodeURIComponent).join('/')}`;
+function safeAttachmentPath(day, filename) {
+  const safeDay = String(day || '');
+  const safeFile = String(filename || '');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(safeDay) || safeFile.includes('/') || safeFile.includes('..')) {
+    throw new Error('invalid attachment path');
+  }
+  const full = path.resolve(attachmentDir, safeDay, safeFile);
+  const root = path.resolve(attachmentDir);
+  if (!full.startsWith(root + path.sep)) throw new Error('invalid attachment path');
+  return full;
 }
 
 function summarizeAttachments(attachments = []) {
   return attachments.map((item, index) => {
     const lines = [`${index + 1}. ${item.name || 'attachment'}`];
-    if (item.url || item.path) lines.push(`ไฟล์: ${item.url || item.path}`);
+    if (item.path) lines.push(`ไฟล์: ${item.path}`);
     if (item.ocrText) lines.push(`ข้อความที่อ่านได้: ${String(item.ocrText).slice(0, 1200)}`);
     return lines.join(' | ');
   }).join('\n');
@@ -350,17 +398,26 @@ async function walkMarkdown(dir) {
   return files;
 }
 
+function extractKnowledgeMetadata(content, file) {
+  const get = (name) => content.match(new RegExp(`^${name}:\\s*(.+)$`, 'mi'))?.[1]?.trim() || '';
+  const title = content.match(/^#\s+(.+)$/m)?.[1] || path.basename(file, '.md');
+  const tags = get('tags').split(',').map((item) => item.trim()).filter(Boolean);
+  return { title, category: get('category') || path.basename(path.dirname(file)), tags, source: get('source'), lastReviewedAt: get('lastReviewedAt') };
+}
+
 async function rebuildKnowledgeIndex() {
   const files = await walkMarkdown(knowledgeDir);
   const docs = [];
   for (const file of files) {
     const content = await fs.readFile(file, 'utf8');
-    const title = content.match(/^#\s+(.+)$/m)?.[1] || path.basename(file, '.md');
+    const metadata = extractKnowledgeMetadata(content, file);
     docs.push({
       path: path.relative(process.cwd(), file),
-      title,
+      title: metadata.title,
+      metadata,
+      reviewed: Boolean(metadata.lastReviewedAt),
       content,
-      tokens: [...new Set(tokenize(`${title}\n${content}`))]
+      tokens: [...new Set(tokenize(`${metadata.title} ${metadata.category} ${metadata.tags.join(' ')}\n${content}`))]
     });
   }
   await fs.mkdir(path.dirname(ragIndexPath), { recursive: true });
@@ -393,7 +450,7 @@ function categoryDocBoost(category, doc) {
   return 0;
 }
 
-async function searchKnowledge(query, limit = 4) {
+async function searchKnowledge(query, limit = ragMaxDocs) {
   const index = await loadRagIndex();
   const category = inferCategory(query);
   const queryTokens = tokenize(query);
@@ -408,17 +465,27 @@ async function searchKnowledge(query, limit = 4) {
     })
     .filter((doc) => doc.score > 0)
     .sort((a, b) => b.score - a.score)
-    .slice(0, limit)
+    .slice(0, Math.min(limit, ragMaxDocs))
     .map((doc) => ({
       path: doc.path,
       title: doc.title,
+      metadata: doc.metadata || {},
+      reviewed: Boolean(doc.reviewed),
       score: doc.score,
       snippet: (doc.content || '').replace(/\s+/g, ' ').slice(0, 320),
-      content: (doc.content || '').slice(0, 1600)
+      content: (doc.content || '').slice(0, ragMaxCharsPerDoc)
     }));
 
-  const context = scored.map((doc, index) => `Knowledge ${index + 1}: ${doc.title}\nPath: ${doc.path}\n${doc.content}`).join('\n\n');
-  return { count: index.docs.length, items: scored.map(({ content, ...doc }) => doc), context };
+  let total = 0;
+  const contextParts = [];
+  for (let index = 0; index < scored.length; index += 1) {
+    const doc = scored[index];
+    const part = `Knowledge ${index + 1}: ${doc.title}\nPath: ${doc.path}\nCategory: ${doc.metadata?.category || ''}\nReviewed: ${doc.reviewed ? 'yes' : 'no'}\n${doc.content}`;
+    if (total + part.length > ragMaxTotalContextChars) break;
+    total += part.length;
+    contextParts.push(part);
+  }
+  return { count: index.docs.length, items: scored.map(({ content, ...doc }) => doc), context: contextParts.join('\n\n'), limits: { maxDocs: ragMaxDocs, maxCharsPerDoc: ragMaxCharsPerDoc, maxTotalContextChars: ragMaxTotalContextChars } };
 }
 
 function normalizeTicket(ticket, fallbackTicket) {
@@ -499,19 +566,46 @@ async function callLocalGemma(messages) {
   };
 }
 
+
+async function readTicketRows() {
+  const raw = await fs.readFile(localLogPath, 'utf8').catch(() => '');
+  return raw.split('\n').filter(Boolean).map((line) => JSON.parse(line));
+}
+async function writeTicketRows(rows) {
+  await fs.mkdir(path.dirname(localLogPath), { recursive: true });
+  await fs.writeFile(localLogPath, rows.map((row) => JSON.stringify(row)).join('\n') + (rows.length ? '\n' : ''), 'utf8');
+}
+async function generateTicketId(now = new Date()) {
+  const day = now.toISOString().slice(0, 10).replaceAll('-', '');
+  const rows = await readTicketRows();
+  const max = rows.reduce((highest, row) => {
+    const match = String(row.ticketId || '').match(new RegExp(`^IT-${day}-(\\d{4})$`));
+    return match ? Math.max(highest, Number(match[1])) : highest;
+  }, 0);
+  return `IT-${day}-${String(max + 1).padStart(4, '0')}`;
+}
+function normalizeTicketStatus(status) {
+  const allowed = ['New', 'In Progress', 'Waiting User', 'Resolved', 'Closed'];
+  return allowed.includes(status) ? status : 'New';
+}
+
 async function saveIncidentNote(row) {
   const safeDate = new Date().toISOString().slice(0, 10);
   const safeTitle = String(row['ปัญหา'] || 'incident').replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-|-$/g, '').slice(0, 70) || 'incident';
   const file = path.join(process.cwd(), 'knowledge', 'Incidents', `${safeDate}-${safeTitle}.md`);
-  const note = `# ${row['ปัญหา'] || 'Incident'}\n\nประเภท: ${row['ประเภท'] || ''}\nระดับความเร่งด่วน: ${row['ระดับความเร่งด่วน'] || ''}\nทีมที่เกี่ยวข้อง: ${row['ทีมที่เกี่ยวข้อง'] || ''}\n\n## ผลกระทบ\n${row['ผลกระทบ'] || ''}\n\n## ข้อมูลที่ได้รับ\n${row['ข้อมูลที่ได้รับ'] || ''}\n\n## Transcript\n${row.transcript || ''}\n`;
+  const note = `# ${row.ticketId || ''} ${row['ปัญหา'] || 'Incident'}\n\nประเภท: ${row['ประเภท'] || ''}\nระดับความเร่งด่วน: ${row['ระดับความเร่งด่วน'] || ''}\nทีมที่เกี่ยวข้อง: ${row['ทีมที่เกี่ยวข้อง'] || ''}\n\n## ผลกระทบ\n${row['ผลกระทบ'] || ''}\n\n## ข้อมูลที่ได้รับ\n${row['ข้อมูลที่ได้รับ'] || ''}\n\n## Transcript\n${row.transcript || ''}\n`;
   await fs.mkdir(path.dirname(file), { recursive: true });
   await fs.writeFile(file, note, 'utf8');
 }
 
 async function saveTicket(ticket, sourceMessage, agentReply, transcript = [], attachments = []) {
   const attachmentSummary = summarizeAttachments(attachments);
+  const timestamp = new Date().toISOString();
+  const ticketId = await generateTicketId(new Date(timestamp));
   const row = {
-    timestamp: new Date().toISOString(),
+    ticketId,
+    status: normalizeTicketStatus(ticket.status),
+    timestamp,
     sourceMessage,
     agentReply,
     transcript: transcript.map((item) => `${item.role}: ${item.content}`).join('\n'),
@@ -558,6 +652,41 @@ app.get('/knowledge-chat', (_req, res) => {
   res.sendFile(path.join(staticDir, 'index.html'));
 });
 
+
+function safeKnowledgeFolderName(name) {
+  const clean = String(name || '').replace(/^\/+|\/+$/g, '');
+  if (!clean || clean.includes('..')) throw new Error('invalid folder name');
+  return clean;
+}
+function safeKnowledgeFileFromFolder(folder, name) {
+  const cleanFolder = safeKnowledgeFolderName(folder || 'Uploads');
+  const cleanName = String(name || '');
+  if (!cleanName.endsWith('.md') || cleanName.includes('/') || cleanName.includes('..')) throw new Error('invalid markdown filename');
+  return safeKnowledgePath(`${cleanFolder}/${cleanName}`);
+}
+app.get('/api/admin/knowledge/summary', requireAdmin, async (_req, res) => {
+  const files = await walkMarkdown(knowledgeDir);
+  const folders = new Map();
+  for (const file of files) {
+    const relative = path.relative(knowledgeDir, file);
+    const folder = path.dirname(relative) === '.' ? 'Root' : path.dirname(relative);
+    const stat = await fs.stat(file);
+    const content = await fs.readFile(file, 'utf8');
+    if (!folders.has(folder)) folders.set(folder, []);
+    folders.get(folder).push({ name: path.basename(file), size: stat.size, updatedAt: stat.mtime.toISOString(), title: content.match(/^#\s+(.+)$/m)?.[1] || path.basename(file, '.md'), reviewed: /^lastReviewedAt:\s*\S+/mi.test(content) });
+  }
+  const tree = [...folders.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([name, files]) => ({ name, files: files.sort((a, b) => a.name.localeCompare(b.name)) }));
+  const index = await loadRagIndex();
+  res.json({ ok: true, tree, stats: { folders: tree.length, files: files.length, chunks: index.docs?.length || 0, updatedAt: index.generatedAt || '' } });
+});
+app.post('/api/admin/knowledge/folder', requireAdmin, async (req, res) => {
+  try {
+    const folder = safeKnowledgeFolderName(req.body?.name);
+    await fs.mkdir(path.join(knowledgeDir, folder), { recursive: true });
+    res.json({ ok: true, folder });
+  } catch (error) { res.status(400).json({ error: error.message }); }
+});
+
 app.get('/api/admin/knowledge', requireAdmin, async (_req, res) => {
   const files = await walkMarkdown(knowledgeDir);
   const notes = [];
@@ -576,22 +705,22 @@ app.get('/api/admin/knowledge', requireAdmin, async (_req, res) => {
 
 app.get('/api/admin/knowledge/file', requireAdmin, async (req, res) => {
   try {
-    const { clean, full } = safeKnowledgePath(req.query.path);
-    const content = await fs.readFile(full, 'utf8');
-    res.json({ ok: true, path: clean, content });
+    const target = req.query.path ? safeKnowledgePath(req.query.path) : safeKnowledgeFileFromFolder(req.query.folder, req.query.name);
+    const content = await fs.readFile(target.full, 'utf8');
+    res.json({ ok: true, path: target.clean, content });
   } catch (error) {
     res.status(400).json({ error: error.message });
   }
 });
 
-app.post('/api/admin/knowledge/file', requireAdmin, async (req, res) => {
+app.put('/api/admin/knowledge/file', requireAdmin, async (req, res) => {
   try {
-    const { clean, full } = safeKnowledgePath(req.body?.path);
+    const target = req.body?.path ? safeKnowledgePath(req.body.path) : safeKnowledgeFileFromFolder(req.body?.folder, req.body?.name);
     const content = String(req.body?.content || '');
-    await fs.mkdir(path.dirname(full), { recursive: true });
-    await fs.writeFile(full, content, 'utf8');
+    await fs.mkdir(path.dirname(target.full), { recursive: true });
+    await fs.writeFile(target.full, content, 'utf8');
     const index = await rebuildKnowledgeIndex();
-    res.json({ ok: true, path: clean, index });
+    res.json({ ok: true, path: target.clean, index });
   } catch (error) {
     res.status(400).json({ error: error.message });
   }
@@ -628,41 +757,49 @@ app.get('/api/admin/ocr/status', requireAdmin, async (_req, res) => {
 app.get('/api/admin/setup/status', requireAdmin, async (_req, res) => {
   const knowledge = await loadRagIndex();
   const ocr = await getTyphoonOcrStatus();
+  const commandExists = async (cmd) => execFileAsync('/bin/zsh', ['-lc', `command -v ${cmd}`], { timeout: 5000 }).then(() => true).catch(() => false);
+  const writable = async (dir) => {
+    try {
+      await fs.mkdir(dir, { recursive: true });
+      const file = path.join(dir, `.write-test-${Date.now()}`);
+      await fs.writeFile(file, 'ok');
+      await fs.unlink(file);
+      return true;
+    } catch { return false; }
+  };
   let modelReady = false;
+  let modelDetail = `ยังไม่พบ local model server ที่ ${llmBaseUrl}`;
   try {
     const response = await fetch(`${llmBaseUrl}/models`);
     modelReady = response.ok;
+    modelDetail = modelReady ? `LLM server พร้อมตอบผ่าน ${llmModel}` : modelDetail;
   } catch {}
+  const pdfinfo = await commandExists('pdfinfo');
+  const pdftoppm = await commandExists('pdftoppm');
+  res.json({ ok: true, checks: [
+    { id: 'admin_auth', label: 'Admin authentication', state: configuredAdminAuth ? 'pass' : 'warn', ready: Boolean(configuredAdminAuth), detail: configuredAdminAuth ? 'ตั้งค่า ADMIN_AUTH แล้ว' : 'ใช้ dev-only fallback เฉพาะโหมด development', nextStep: 'ตั้งค่า ADMIN_AUTH ใน .env ก่อนใช้งานจริง' },
+    { id: 'model', label: 'LLM server', state: modelReady ? 'pass' : 'fail', ready: modelReady, detail: modelDetail, nextStep: 'รัน npm run local หรือ scripts/start_model.sh' },
+    { id: 'knowledge', label: 'Knowledge index', state: knowledge.docs?.length ? 'pass' : 'warn', ready: Boolean(knowledge.docs?.length), detail: knowledge.docs?.length ? `มีเอกสาร ${knowledge.docs.length} รายการในดัชนี` : 'ยังไม่มีเอกสารในดัชนี', nextStep: 'อัปโหลดเอกสารแล้วกด Reindex knowledge' },
+    { id: 'sheet', label: 'Google Sheet webhook', state: sheetWebhookUrl ? 'pass' : 'warn', ready: Boolean(sheetWebhookUrl), detail: sheetWebhookUrl ? 'ตั้งค่า webhook แล้ว' : 'ยังไม่ตั้งค่า webhook', nextStep: 'ใส่ GOOGLE_SHEET_WEBHOOK_URL ใน .env หากต้องการส่ง Sheet' },
+    { id: 'ocr', label: 'Typhoon/Ollama OCR', state: ocr.available ? 'pass' : ocr.reachable ? 'warn' : 'fail', ready: ocr.available, detail: ocr.detail, nextStep: ocr.installCommand },
+    { id: 'poppler', label: 'Poppler PDF tools', state: pdfinfo && pdftoppm ? 'pass' : 'fail', ready: pdfinfo && pdftoppm, detail: pdfinfo && pdftoppm ? 'พบ pdfinfo และ pdftoppm' : 'ยังไม่พบ Poppler tools สำหรับ PDF OCR', nextStep: 'macOS: brew install poppler | Windows: npm run setup:windows' },
+    { id: 'attachments', label: 'Attachment directory', state: await writable(attachmentDir) ? 'pass' : 'fail', ready: await writable(attachmentDir), detail: 'ตรวจสอบสิทธิ์เขียน data/attachments', nextStep: 'ตรวจสิทธิ์โฟลเดอร์ data/attachments' },
+    { id: 'data', label: 'Data directory', state: await writable(path.dirname(localLogPath)) ? 'pass' : 'fail', ready: await writable(path.dirname(localLogPath)), detail: 'ตรวจสอบสิทธิ์เขียน data/', nextStep: 'ตรวจสิทธิ์โฟลเดอร์ data/' }
+  ] });
+});
 
-  res.json({
-    ok: true,
-    checks: [
-      {
-        id: 'model',
-        label: 'Local AI model',
-        ready: modelReady,
-        detail: modelReady ? `พร้อมตอบผ่าน ${llmModel}` : 'ยังไม่พบ local model server ถามเอกสารจะใช้ fallback เท่านั้น'
-      },
-      {
-        id: 'knowledge',
-        label: 'Knowledge library',
-        ready: Boolean(knowledge.docs?.length),
-        detail: knowledge.docs?.length ? `มีเอกสาร ${knowledge.docs.length} รายการในคลัง` : 'ยังไม่มีเอกสารในคลัง เริ่มจากเพิ่มเอกสารด้านล่าง'
-      },
-      {
-        id: 'sheet',
-        label: 'Google Sheet logging',
-        ready: Boolean(sheetWebhookUrl),
-        detail: sheetWebhookUrl ? 'ตั้งค่า Google Sheet webhook แล้ว' : 'ยังไม่ตั้งค่า Google Sheet webhook'
-      },
-      {
-        id: 'document_reader',
-        label: 'PDF/Image reader',
-        ready: ocr.available,
-        detail: ocr.available ? 'พร้อมแปลง PDF/รูปเป็นข้อความ' : 'ระบบจะพยายามเปิดให้อัตโนมัติเมื่อเพิ่ม PDF/รูป'
-      }
-    ]
-  });
+app.post('/api/admin/setup/test-sheet', requireAdmin, async (_req, res) => {
+  if (!sheetWebhookUrl) return res.json({ ok: false, detail: 'GOOGLE_SHEET_WEBHOOK_URL is not configured' });
+  try {
+    const response = await fetch(sheetWebhookUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ timestamp: new Date().toISOString(), sourceMessage: 'health check', ประเภท: 'Health Check', ปัญหา: 'Google Sheet webhook test' }) });
+    res.json({ ok: response.ok, detail: response.ok ? 'Google Sheet webhook responded OK' : `HTTP ${response.status}` });
+  } catch (error) { res.status(500).json({ error: error.message }); }
+});
+app.post('/api/admin/setup/test-llm', requireAdmin, async (_req, res) => {
+  try {
+    const response = await fetch(`${llmBaseUrl}/chat/completions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: llmModel, max_tokens: 32, messages: [{ role: 'user', content: 'ตอบคำว่า ok สั้นๆ' }] }) });
+    res.json({ ok: response.ok, detail: response.ok ? 'LLM test passed' : `HTTP ${response.status}` });
+  } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
 app.post('/api/admin/ocr/start', requireAdmin, async (_req, res) => {
@@ -674,7 +811,7 @@ app.post('/api/admin/ocr/start', requireAdmin, async (_req, res) => {
   }
 });
 
-app.post('/api/admin/knowledge/parse-ocr', requireAdmin, async (req, res) => {
+app.post('/api/admin/knowledge/parse-ocr', requireAdmin, uploadLimiter, async (req, res) => {
   try {
     const status = await getTyphoonOcrStatus();
     if (!status.available) {
@@ -694,12 +831,12 @@ app.post('/api/admin/knowledge/parse-ocr', requireAdmin, async (req, res) => {
 
 app.delete('/api/admin/knowledge/file', requireAdmin, async (req, res) => {
   try {
-    const { clean, full } = safeKnowledgePath(req.body?.path);
-    await fs.unlink(full).catch((error) => {
+    const target = req.body?.path ? safeKnowledgePath(req.body.path) : safeKnowledgeFileFromFolder(req.body?.folder, req.body?.name);
+    await fs.unlink(target.full).catch((error) => {
       if (error.code !== 'ENOENT') throw error;
     });
     const index = await rebuildKnowledgeIndex();
-    res.json({ ok: true, path: clean, index });
+    res.json({ ok: true, path: target.clean, index });
   } catch (error) {
     res.status(400).json({ error: error.message });
   }
@@ -713,7 +850,59 @@ app.post('/api/admin/knowledge/reindex', requireAdmin, async (_req, res) => {
   }
 });
 
-app.get('/api/models', async (_req, res) => {
+
+function filterTickets(rows, query = {}) {
+  const q = String(query.q || '').toLowerCase();
+  return rows.filter((row) => {
+    if (query.status && row.status !== query.status) return false;
+    if (query.urgency && row['ระดับความเร่งด่วน'] !== query.urgency) return false;
+    if (query.category && row['ประเภท'] !== query.category) return false;
+    if (query.team && row['ทีมที่เกี่ยวข้อง'] !== query.team) return false;
+    if (!q) return true;
+    return JSON.stringify(row).toLowerCase().includes(q);
+  });
+}
+function ticketsToCsv(rows) {
+  const headers = ['ticketId', 'status', 'timestamp', 'requesterName', 'department', 'location', 'contact', 'assetName', 'ประเภท', 'ปัญหา', 'ผลกระทบ', 'ข้อมูลที่ได้รับ', 'ระดับความเร่งด่วน', 'ทีมที่เกี่ยวข้อง', 'ไฟล์แนบ'];
+  const esc = (value) => `"${String(value ?? '').replaceAll('"', '""')}"`;
+  return [headers.join(','), ...rows.map((row) => headers.map((header) => esc(row[header])).join(','))].join('\n');
+}
+app.get('/api/admin/tickets', requireAdmin, async (req, res) => {
+  const rows = (await readTicketRows()).sort((a, b) => String(b.timestamp || '').localeCompare(String(a.timestamp || '')));
+  res.json({ ok: true, tickets: filterTickets(rows, req.query) });
+});
+app.get('/api/admin/tickets/export.csv', requireAdmin, async (req, res) => {
+  const rows = (await readTicketRows()).sort((a, b) => String(b.timestamp || '').localeCompare(String(a.timestamp || '')));
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', 'attachment; filename="tickets.csv"');
+  res.send(ticketsToCsv(filterTickets(rows, req.query)));
+});
+app.get('/api/admin/tickets/:ticketId', requireAdmin, async (req, res) => {
+  const row = (await readTicketRows()).find((item) => item.ticketId === req.params.ticketId);
+  if (!row) return res.status(404).json({ error: 'ticket not found' });
+  res.json({ ok: true, ticket: row });
+});
+app.patch('/api/admin/tickets/:ticketId', requireAdmin, async (req, res) => {
+  const rows = await readTicketRows();
+  const index = rows.findIndex((item) => item.ticketId === req.params.ticketId);
+  if (index === -1) return res.status(404).json({ error: 'ticket not found' });
+  rows[index] = { ...rows[index], status: normalizeTicketStatus(req.body?.status), updatedAt: new Date().toISOString() };
+  await writeTicketRows(rows);
+  res.json({ ok: true, ticket: rows[index] });
+});
+
+
+app.get('/api/admin/attachments/:day/:filename', requireAdmin, async (req, res) => {
+  try {
+    const full = safeAttachmentPath(req.params.day, req.params.filename);
+    await fs.access(full);
+    res.download(full);
+  } catch (error) {
+    res.status(404).json({ error: 'attachment not found' });
+  }
+});
+
+app.get('/api/models', requireAdmin, async (_req, res) => {
   const candidates = [
     {
       id: 'gemma4-e4b-qat',
@@ -749,7 +938,7 @@ app.get('/api/models', async (_req, res) => {
   res.json({ ok: true, selected: llmModel, models, serverModels });
 });
 
-app.post('/api/models/select', async (req, res) => {
+app.post('/api/models/select', requireAdmin, async (req, res) => {
   const model = String(req.body?.model || '').trim();
   const allowed = ['gemma4-e4b-qat', 'gemma4-12b-qat'];
   if (!allowed.includes(model)) {
@@ -769,7 +958,7 @@ app.get('/api/config', (_req, res) => {
 });
 
 
-app.post('/api/attachments', async (req, res) => {
+app.post('/api/attachments', uploadLimiter, async (req, res) => {
   try {
     const file = req.body?.file;
     if (!file || typeof file !== 'object') {
@@ -814,7 +1003,7 @@ app.post('/api/attachments', async (req, res) => {
         type: String(file.type || 'application/octet-stream'),
         size: Math.round(sizeMb * 1024 * 1024),
         path: `data/attachments/${relativePath}`,
-        url: attachmentPublicPath(relativePath),
+        downloadPath: `/api/admin/attachments/${day}/${safeName}`,
         ocrOk,
         ocrText,
         ocrError
@@ -825,12 +1014,12 @@ app.post('/api/attachments', async (req, res) => {
   }
 });
 
-app.get('/api/rag/search', async (req, res) => {
+app.get('/api/rag/search', requireAdmin, async (req, res) => {
   const q = String(req.query.q || '');
   res.json(await searchKnowledge(q));
 });
 
-app.post('/api/chat', async (req, res) => {
+app.post('/api/chat', chatLimiter, async (req, res) => {
   const messages = Array.isArray(req.body?.messages) ? req.body.messages : [];
   const attachments = Array.isArray(req.body?.attachments) ? req.body.attachments : [];
   const detailed = Boolean(req.body?.detailed);
@@ -858,11 +1047,12 @@ app.post('/api/chat', async (req, res) => {
 
 
 async function completeKnowledgeAnswer({ conversation, ragContext, attachmentText, detailed = false }) {
-  const baseSystem = `You are a helpful Thai document and knowledge-base chatbot.
-Answer in Thai unless the user asks for English. You can answer longer and more conversationally than the IT ticket intake agent.
-Use Attached File Text first when present, then Relevant Knowledge.
-If OCR/file text is unavailable, say clearly that the file was received but the readable text is not available, then suggest asking the user to upload a clearer file or enable OCR.
-Do not invent policy, asset names, contacts, or exact procedures that are not in the knowledge or attached text.
+  const baseSystem = `You are a helpful general Thai AI assistant with document and knowledge-base support.
+Answer in Thai unless the user asks for English. You can chat naturally like a normal AI assistant.
+If Attached File Text is present, use it first. If Relevant Knowledge is present, use it when relevant.
+If the user asks a general question and no document/knowledge is relevant, answer normally from general knowledge and say briefly when you are not relying on local documents.
+If OCR/file text is unavailable but the user asks about the file, say clearly that the file was received but readable text is not available, then suggest uploading a clearer file or enabling OCR.
+Do not invent local policy, asset names, contacts, or exact internal procedures that are not in the knowledge or attached text.
 When useful, structure the answer with short headings, bullet points, and GitHub-Flavored Markdown tables. Do not use raw HTML tables.`;
   const context = `Attached File Text:\n${attachmentText || '(no attached readable text)'}\n\nRelevant Knowledge:\n${ragContext || '(no direct matches)'}\n\nConversation:\n${conversation}`;
   const call = async (messages, maxTokens = 2200) => {
@@ -880,20 +1070,20 @@ When useful, structure the answer with short headings, bullet points, and GitHub
   if (!detailed) {
     return await call([
       { role: 'system', content: baseSystem },
-      { role: 'user', content: `${context}\n\nตอบคำถามล่าสุดโดยอ้างอิงไฟล์แนบและคลังความรู้ด้านบน` }
+      { role: 'user', content: `${context}\n\nตอบคำถามล่าสุด ถ้ามีไฟล์แนบหรือคลังความรู้ให้ใช้อ้างอิงก่อน ถ้าไม่เกี่ยวข้องให้ตอบแบบผู้ช่วย AI ทั่วไป` }
     ]);
   }
   const draft = await call([
     { role: 'system', content: `${baseSystem}\nCreate a careful draft answer. Focus on coverage and evidence. Do not show hidden reasoning.` },
-    { role: 'user', content: `${context}\n\nสร้างคำตอบร่างแรกที่ละเอียดและอ้างอิงจากข้อมูลเท่านั้น` }
+    { role: 'user', content: `${context}\n\nสร้างคำตอบร่างแรกที่ละเอียด ถ้ามีไฟล์แนบหรือคลังความรู้ให้ใช้อ้างอิงก่อน ถ้าเป็นคำถามทั่วไปให้ตอบตามความรู้ทั่วไป` }
   ], 2400);
   return await call([
     { role: 'system', content: `${baseSystem}\nYou are now the reviewer and final editor. Improve correctness, clarity, and usefulness. Remove unsupported claims. Keep the final answer readable with headings and bullets. Do not mention internal draft/review steps.` },
-    { role: 'user', content: `${context}\n\nDraft answer:\n${draft}\n\nตรวจทานและเรียบเรียงเป็นคำตอบสุดท้ายที่ชัดเจน มีเหตุผล และไม่มั่ว` }
+    { role: 'user', content: `${context}\n\nDraft answer:\n${draft}\n\nตรวจทานและเรียบเรียงเป็นคำตอบสุดท้ายที่ชัดเจน มีเหตุผล ไม่มั่ว และบอกให้ชัดเมื่อไม่ได้อ้างอิงเอกสาร local` }
   ], 2600);
 }
 
-app.post('/api/knowledge-chat', async (req, res) => {
+app.post('/api/knowledge-chat', chatLimiter, async (req, res) => {
   const messages = Array.isArray(req.body?.messages) ? req.body.messages : [];
   const attachments = Array.isArray(req.body?.attachments) ? req.body.attachments : [];
   const detailed = Boolean(req.body?.detailed);
@@ -911,15 +1101,6 @@ app.post('/api/knowledge-chat', async (req, res) => {
 
   const searchText = [cleanMessages.map((item) => `${item.role}: ${item.content}`).join('\n'), attachmentText].filter(Boolean).join('\n');
   const rag = await searchKnowledge(searchText, 6);
-  if (!rag.count && !attachmentText) {
-    res.json({
-      mode: 'empty-knowledge',
-      answer: 'ตอนนี้ยังไม่มีเอกสารในคลังความรู้ครับ ไปที่ /admin แล้วอัปโหลดหรือสร้าง note ก่อน จากนั้นกด Save + Reindex แล้วกลับมาถามใหม่ได้ครับ',
-      ragContext: { count: 0, items: [] }
-    });
-    return;
-  }
-
   try {
     const conversation = cleanMessages.map((item) => `${item.role === 'user' ? 'User' : 'Assistant'}: ${item.content}`).join('\n');
     const answer = await completeKnowledgeAnswer({ conversation, ragContext: rag.context, attachmentText, detailed });
@@ -929,13 +1110,13 @@ app.post('/api/knowledge-chat', async (req, res) => {
       mode: 'fallback-rag',
       answer: rag.items.length
         ? `ผมเจอเอกสารที่น่าจะเกี่ยวข้องครับ แต่ตอนนี้โมเดล local ยังไม่พร้อมตอบแบบละเอียด:\n\n${rag.items.map((item, index) => `${index + 1}. ${item.title}\n${item.snippet}`).join('\n\n')}`
-        : 'ยังไม่เจอเอกสารที่เกี่ยวข้องครับ ลองเพิ่ม keyword หรืออัปโหลดเอกสารใน /admin ก่อนครับ',
+        : 'ตอนนี้โมเดล local ยังไม่พร้อมตอบครับ ลองถามใหม่อีกครั้ง หรือเช็กว่า local model server เปิดอยู่ครับ',
       ragContext: { count: rag.count, items: rag.items }
     });
   }
 });
 
-app.post('/api/tickets', async (req, res) => {
+app.post('/api/tickets', ticketLimiter, async (req, res) => {
   const ticket = req.body?.ticket;
   const sourceMessage = String(req.body?.sourceMessage || '');
   const agentReply = String(req.body?.agentReply || '');
@@ -966,6 +1147,12 @@ app.get(/.*/, (_req, res) => {
   res.sendFile(path.join(staticDir, 'index.html'));
 });
 
-app.listen(port, () => {
-  console.log(`Gemma IT Ticket WebUI: http://127.0.0.1:${port}`);
-});
+if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(import.meta.url).pathname)) {
+  console.log(`[startup] Admin auth: ${configuredAdminAuth ? 'configured' : 'development fallback active'}${isProduction ? ' (production)' : ' (development)'}`);
+  console.log(`[startup] JSON body limit: ${jsonBodyLimitMb}mb`);
+  app.listen(port, () => {
+    console.log(`Gemma IT Ticket WebUI: http://127.0.0.1:${port}`);
+  });
+}
+
+export { app, safeKnowledgePath, safeAttachmentName, generateTicketId, fallbackTriage, inferCategory, searchKnowledge, requireAdmin };

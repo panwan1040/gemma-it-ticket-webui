@@ -292,3 +292,32 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   .summary-bar small { max-width: 230px; }
   .category-list { grid-template-columns: 1fr; }
 }
+
+
+.admin-tabs { display: flex; gap: 8px; border-bottom: 1px solid var(--line); background: white; padding: 10px 20px; }
+.admin-tabs button { border: 1px solid var(--line); border-radius: 999px; background: white; color: var(--muted); padding: 8px 12px; font-size: 12px; font-weight: 800; }
+.admin-tabs button.active { background: #111827; border-color: #111827; color: white; }
+.ticket-admin, .setup-panel { min-height: 0; flex: 1; overflow-y: auto; padding: 18px 20px; }
+.admin-filterbar { display: grid; grid-template-columns: minmax(180px, 1fr) 150px 150px auto auto; gap: 10px; margin-bottom: 14px; }
+.admin-filterbar input, .admin-filterbar select, .ticket-detail select { border: 1px solid var(--line); border-radius: 11px; background: white; padding: 10px 12px; font-size: 13px; outline: none; }
+.ticket-admin-grid { display: grid; grid-template-columns: minmax(280px, 420px) minmax(0, 1fr); gap: 14px; align-items: start; }
+.ticket-list { display: grid; gap: 8px; }
+.ticket-row { border: 1px solid var(--line); border-radius: 14px; background: white; padding: 12px; text-align: left; color: var(--text); box-shadow: var(--shadow-sm); }
+.ticket-row.active { border-color: #94a3b8; background: #f8fafc; }
+.ticket-row strong, .ticket-row span, .ticket-row small { display: block; }
+.ticket-row span { margin-top: 5px; color: #344054; font-size: 13px; line-height: 1.45; }
+.ticket-row small { margin-top: 6px; color: var(--muted); font-size: 12px; }
+.ticket-detail { padding: 16px; }
+.ticket-detail dl { display: grid; grid-template-columns: 150px minmax(0,1fr); gap: 10px 14px; margin: 16px 0 0; }
+.ticket-detail dt { color: var(--muted); font-size: 12px; font-weight: 800; }
+.ticket-detail dd { margin: 0; color: var(--text); font-size: 13px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
+.setup-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+.check-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 12px; }
+.check-card { padding: 14px; }
+.check-card h3 { margin: 10px 0 6px; font-size: 15px; }
+.check-card p, .check-card small { display: block; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.check-card small { margin-top: 8px; color: var(--warn); font-weight: 760; }
+@media (max-width: 900px) {
+  .admin-filterbar, .ticket-admin-grid, .check-grid { grid-template-columns: 1fr; }
+  .ticket-detail dl { grid-template-columns: 1fr; }
+}

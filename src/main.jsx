@@ -40,7 +40,7 @@ const defaultConfig = {
 
 const publicNavItems = [
   { path: '/', label: 'แจ้งปัญหา', description: 'รับเรื่องและสร้างใบงาน', icon: ClipboardList },
-  { path: '/knowledge-chat', label: 'ถาม/สรุปเอกสาร', description: 'ถามคลังความรู้หรือไฟล์แนบ', icon: BookOpen }
+  { path: '/knowledge-chat', label: 'แชท AI', description: 'คุยทั่วไปหรือถามเอกสาร', icon: BookOpen }
 ];
 const routeItems = [
   ...publicNavItems,
@@ -48,6 +48,7 @@ const routeItems = [
 ];
 
 const urgencyOptions = ['Low', 'Medium', 'High', 'Critical'];
+const ticketStatusOptions = ['New', 'In Progress', 'Waiting User', 'Resolved', 'Closed'];
 const documentCategories = ['เอกสารทั้งหมด', 'คู่มือการใช้งาน', 'แก้ไขปัญหา', 'นโยบาย / ระเบียบ', 'บริการ / ระบบ', 'ติดต่อ / ข้อมูลอ้างอิง', 'อื่น ๆ'];
 const optionalFields = [
   ['requesterName', 'ชื่อผู้แจ้ง'],
@@ -79,7 +80,8 @@ const statusCopy = {
   'local-gemma': 'พร้อมรับเรื่อง',
   'fallback-rules': 'ระบบสำรองพร้อมใช้งาน',
   'fallback-rag': 'ใช้การค้นหาแบบสำรอง',
-  'empty-knowledge': 'ยังไม่มีเอกสารในคลัง'
+  'empty-knowledge': 'ยังไม่มีเอกสารในคลัง',
+  'detailed-gemma': 'ตอบละเอียดแล้ว'
 };
 
 function cn(...classes) {
@@ -351,8 +353,8 @@ function TicketIntakePage({ config }) {
     if ((!userText && !fileContext) || isThinking) return;
     const content = [userText, fileContext].filter(Boolean).join('\n\n');
     const displayContent = userText || 'แนบไฟล์ให้ตรวจสอบ';
-    const visibleMessages = [...messages, { role: 'user', content: displayContent, displayContent, attachments }];
-    const nextMessages = [...messages.map(({ role, content }) => ({ role, content })), { role: 'user', content }];
+    const visibleMessages = [...messages, { role: 'user', content, displayContent, attachments }];
+    const nextMessages = [...visibleMessages.map(({ role, content }) => ({ role, content }))];
     setMessages(visibleMessages);
     setInput('');
     setIsThinking(true);
@@ -368,7 +370,8 @@ function TicketIntakePage({ config }) {
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'chat failed');
       const reply = data.agentReply || 'รับทราบครับ ขอข้อมูลเพิ่มเติมอีกนิดครับ';
-      setMessages([...visibleMessages, { role: 'assistant', content: reply }]);
+      const sourceNote = data.ragContext?.items?.length ? `\n\nข้อมูลอ้างอิงที่ใช้:\n${data.ragContext.items.map((item) => `- ${item.title || item.path}`).join('\n')}` : '';
+      setMessages([...visibleMessages, { role: 'assistant', content: `${reply}${sourceNote}` }]);
       setTicket((current) => ({ ...current, ...(data.ticket || {}) }));
       setMode(data.mode || 'done');
       setMissingFields(data.missingFields || []);
@@ -403,10 +406,11 @@ function TicketIntakePage({ config }) {
         setSaveStatus('บันทึกในเครื่องแล้ว แต่ส่ง webhook ไม่สำเร็จ');
         setMessages((current) => [...current, { role: 'assistant', content: `บันทึกในเครื่องแล้ว แต่ส่ง webhook ไม่สำเร็จครับ\n\n${buildChatSummary(ticket, [], false, '')}\n\nสามารถลองบันทึกอีกครั้งได้ครับ` }]);
       } else {
-        const okText = data.sheetEnabled ? 'บันทึกใบงานและส่งต่อเรียบร้อยแล้ว' : 'บันทึกใบงานในเครื่องแล้ว';
+        const ticketId = data.saved?.ticketId;
+        const okText = `${data.sheetEnabled ? 'บันทึกใบงานและส่งต่อเรียบร้อยแล้ว' : 'บันทึกใบงานในเครื่องแล้ว'}${ticketId ? ` (${ticketId})` : ''}`;
         setSaveState('saved');
         setSaveStatus(okText);
-        setMessages((current) => [...current, { role: 'assistant', content: `ทางทีม IT ได้ข้อมูลครบถ้วนแล้วครับ จะเปิดใบงานและติดต่อกลับอีกครั้ง\n\n${buildChatSummary(ticket, [], true, okText)}\n\nหากมีข้อมูลเพิ่มเติม แจ้งเพิ่มได้เลยครับ` }]);
+        setMessages((current) => [...current, { role: 'assistant', content: `ทางทีม IT ได้ข้อมูลครบถ้วนแล้วครับ จะเปิดใบงานและติดต่อกลับอีกครั้ง${ticketId ? `\n\nTicket ID: ${ticketId}` : ''}\n\n${buildChatSummary(ticket, [], true, okText)}\n\nหากมีข้อมูลเพิ่มเติม แจ้งเพิ่มได้เลยครับ` }]);
         setAttachments([]);
         setSheetOpen(false);
       }
@@ -468,7 +472,7 @@ function KnowledgeChatPage() {
   const [detailedMode, setDetailedMode] = useState(false);
   const [processStep, setProcessStep] = useState('พร้อมรับคำถาม');
   const [isThinking, setIsThinking] = useState(false);
-  const prompts = ['สรุปขั้นตอนแก้ปัญหา printer', 'มีคู่มือ Wi‑Fi อะไรบ้าง', 'ค้นหา SOP เกี่ยวกับบัญชีผู้ใช้'];
+  const prompts = ['ช่วยสรุปไฟล์นี้ให้หน่อย', 'อธิบายเรื่องนี้แบบเข้าใจง่าย', 'ช่วยร่างอีเมลตอบกลับให้หน่อย'];
 
   function attachmentContext() {
     if (!attachments.length) return '';
@@ -504,8 +508,8 @@ function KnowledgeChatPage() {
     if ((!userText && !fileContext) || isThinking) return;
     const content = [userText || 'ช่วยอ่านและสรุปไฟล์แนบนี้ให้หน่อยครับ', fileContext].filter(Boolean).join('\n\n');
     const displayContent = userText || 'ช่วยอ่านและสรุปไฟล์แนบนี้ให้หน่อยครับ';
-    const visibleNext = [...messages, { role: 'user', content: displayContent, displayContent, attachments }];
-    const next = [...messages.map(({ role, content }) => ({ role, content })), { role: 'user', content }];
+    const visibleNext = [...messages, { role: 'user', content, displayContent, attachments }];
+    const next = [...visibleNext.map(({ role, content }) => ({ role, content }))];
     setMessages(visibleNext);
     setInput('');
     setIsThinking(true);
@@ -548,14 +552,14 @@ function KnowledgeChatPage() {
 
   return <div className="page knowledge-page">
     <PageTop
-      title="ถามคลังความรู้"
-      description="ใช้ถามคลังความรู้ หรือแนบไฟล์เพื่อให้ช่วยอ่าน สรุป และอธิบายเอกสาร ไม่สร้างใบงาน"
+      title="แชท AI"
+      description="คุยทั่วไป ถามงาน หรือแนบไฟล์เพื่อให้ช่วยอ่าน สรุป และอธิบายเอกสาร"
       actions={<><label className="detail-toggle"><input type="checkbox" checked={detailedMode} onChange={(event) => setDetailedMode(event.target.checked)} />ตอบละเอียด</label><StatusPill tone={mode === 'error' ? 'danger' : mode === 'thinking' ? 'info' : 'ok'}>{status}</StatusPill><Button variant="secondary" onClick={() => setSourceOpen(true)}><BookOpen size={16} />แหล่งอ้างอิง ({sources.length})</Button></>}
     />
     <section className="knowledge-layout">
       <div className="chat-canvas flat">
         <div className="chat-stream">
-          {messages.length ? messages.map((item, index) => <ChatBubble key={`${item.role}-${index}`} item={item} />) : <EmptyState icon={BookOpen} title="ถามจากเอกสาร หรือแนบไฟล์ให้อ่าน" description="ถามเป็นภาษาปกติได้เลย หรือแนบ PDF/รูปภาพเพื่อให้ช่วยสรุปและอธิบายเนื้อหา">
+          {messages.length ? messages.map((item, index) => <ChatBubble key={`${item.role}-${index}`} item={item} />) : <EmptyState icon={BookOpen} title="คุยกับ AI หรือแนบไฟล์ให้อ่าน" description="ถามทั่วไปได้เหมือน chatbot ปกติ และถ้ามีไฟล์แนบหรือเอกสารในคลัง ระบบจะใช้อ้างอิงให้">
             <div className="chip-row">{prompts.map((item) => <button key={item} onClick={() => setInput(item)}>{item}</button>)}</div>
           </EmptyState>}
           {isThinking ? <ProcessingCard detailed={detailedMode} step={processStep} /> : null}
@@ -563,7 +567,7 @@ function KnowledgeChatPage() {
       </div>
       <SourcePanel open={sourceOpen} onClose={() => setSourceOpen(false)} sources={sources} />
     </section>
-    <ChatComposer value={input} onChange={setInput} onSend={sendMessage} disabled={(!input.trim() && !attachments.length) || isThinking || uploadingAttachment} placeholder="ถามเกี่ยวกับเอกสาร หรือแนบไฟล์เพื่อให้ช่วยสรุป..." helper="หน้านี้เหมาะกับการอ่าน/สรุปเอกสาร ไม่บันทึกใบงาน" compact onFiles={uploadKnowledgeFiles} attachments={attachments} uploading={uploadingAttachment} />
+    <ChatComposer value={input} onChange={setInput} onSend={sendMessage} disabled={(!input.trim() && !attachments.length) || isThinking || uploadingAttachment} placeholder="ถามอะไรก็ได้ หรือแนบไฟล์เพื่อให้ช่วยอ่าน..." helper="คุยทั่วไปได้ และถ้ามีไฟล์/คลังความรู้ ระบบจะใช้อ้างอิงก่อน" compact onFiles={uploadKnowledgeFiles} attachments={attachments} uploading={uploadingAttachment} />
   </div>;
 }
 function ProcessingCard({ detailed, step }) {
@@ -597,6 +601,7 @@ function DocumentLibraryPage() {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState({ tone: 'neutral', text: 'ลากไฟล์มาวางเพื่อเพิ่มเข้าคลังความรู้ได้เลย' });
   const [ocr, setOcr] = useState({ available: false, detail: 'ยังไม่ได้ตรวจสอบการอ่านข้อความจากไฟล์' });
+  const [adminTab, setAdminTab] = useState('knowledge');
 
   const authHeaders = () => (auth ? { Authorization: `Basic ${btoa(auth)}` } : {});
   async function api(path, options = {}) {
@@ -759,7 +764,8 @@ function DocumentLibraryPage() {
       description="เพิ่มเอกสาร แยกหมวดหมู่ และเตรียมข้อมูลให้ AI ใช้อ้างอิง"
       actions={<><StatusPill tone={ocr.available ? 'ok' : 'warning'}>{ocr.available ? 'อ่านข้อความจากไฟล์พร้อม' : 'อ่านข้อความจากไฟล์ยังไม่พร้อม'}</StatusPill><Button variant="secondary" onClick={refresh}><RefreshCcw size={16} />รีเฟรช</Button><Button onClick={reindex} disabled={busy}><Save size={16} />อัปเดตคลังความรู้</Button></>}
     />
-    <section className="library-wrap">
+    <div className="admin-tabs">{[['knowledge', 'คลังความรู้'], ['tickets', 'Tickets'], ['setup', 'สถานะระบบ']].map(([id, label]) => <button key={id} className={cn(adminTab === id && 'active')} onClick={() => setAdminTab(id)}>{label}</button>)}</div>
+    {adminTab === 'tickets' ? <AdminTicketsPanel /> : adminTab === 'setup' ? <SetupStatusPanel /> : <section className="library-wrap">
       <aside className="library-sidebar">
         <label className="upload-card" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); uploadFiles(event.dataTransfer.files); }}>
           <UploadCloud size={22} />
@@ -789,7 +795,7 @@ function DocumentLibraryPage() {
           {visibleFiles.length ? visibleFiles.map((file) => <div key={`${file.folder}/${file.name}`} className="table-row" role="button" tabIndex={0} onClick={() => loadFile(file)} onKeyDown={(event) => { if (event.key === 'Enter') loadFile(file); }}>
             <span><FileText size={16} /><strong>{file.name}</strong></span>
             <span>{file.folder}</span>
-            <span><StatusPill tone="ok">พร้อมใช้งาน</StatusPill></span>
+            <span><StatusPill tone={file.reviewed ? 'ok' : 'warning'}>{file.reviewed ? 'พร้อมใช้งาน' : 'รอ review'}</StatusPill></span>
             <span>{formatBytes(file.size)}</span>
             <IconButton label="จัดการ" onClick={(event) => { event.stopPropagation(); loadFile(file); }}><MoreVertical size={17} /></IconButton>
           </div>) : <EmptyState icon={FileText} title="ยังไม่มีเอกสาร" description="ลากไฟล์เข้ามาเพื่อเริ่มสร้างคลังความรู้" />}
@@ -800,8 +806,69 @@ function DocumentLibraryPage() {
         <textarea className="doc-editor" value={fileText} onChange={(event) => setFileText(event.target.value)} placeholder="ตัวอย่างเนื้อหาจะปรากฏที่นี่หลังเลือกเอกสาร" />
         <Button className="wide" onClick={saveFile} disabled={!selectedFile || busy}><Save size={16} />บันทึกเอกสาร</Button>
       </aside>
-    </section>
+    </section>}
   </div>;
+}
+
+function AdminTicketsPanel() {
+  const [tickets, setTickets] = useState([]);
+  const [selected, setSelected] = useState(null);
+  const [filters, setFilters] = useState({ q: '', status: '', urgency: '', category: '', team: '' });
+  const [notice, setNotice] = useState('');
+  const query = () => new URLSearchParams(Object.entries(filters).filter(([, value]) => value)).toString();
+  async function loadTickets() {
+    const res = await fetch(`/api/admin/tickets?${query()}`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'load tickets failed');
+    setTickets(data.tickets || []);
+    if (!selected && data.tickets?.[0]) setSelected(data.tickets[0]);
+  }
+  useEffect(() => { loadTickets().catch((error) => setNotice(error.message)); }, []);
+  async function updateStatus(ticketId, status) {
+    const res = await fetch(`/api/admin/tickets/${encodeURIComponent(ticketId)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status }) });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'update failed');
+    setSelected(data.ticket);
+    setTickets((current) => current.map((item) => item.ticketId === ticketId ? data.ticket : item));
+    setNotice('อัปเดตสถานะแล้ว');
+  }
+  const exportUrl = `/api/admin/tickets/export.csv?${query()}`;
+  return <section className="ticket-admin">
+    <div className="admin-filterbar"><input value={filters.q} onChange={(event) => setFilters({ ...filters, q: event.target.value })} placeholder="ค้นหา ticket, ข้อความ, ผู้แจ้ง..." /><select value={filters.status} onChange={(event) => setFilters({ ...filters, status: event.target.value })}><option value="">ทุกสถานะ</option>{ticketStatusOptions.map((item) => <option key={item}>{item}</option>)}</select><select value={filters.urgency} onChange={(event) => setFilters({ ...filters, urgency: event.target.value })}><option value="">ทุกความเร่งด่วน</option>{urgencyOptions.map((item) => <option key={item}>{item}</option>)}</select><Button variant="secondary" onClick={() => loadTickets().catch((error) => setNotice(error.message))}>ค้นหา</Button><a className="btn btn-secondary btn-md" href={exportUrl}>Export CSV</a></div>
+    {notice ? <div className="notice success">{notice}</div> : null}
+    <div className="ticket-admin-grid"><div className="ticket-list">{tickets.length ? tickets.map((ticket) => <button key={ticket.ticketId} className={cn('ticket-row', selected?.ticketId === ticket.ticketId && 'active')} onClick={() => setSelected(ticket)}><strong>{ticket.ticketId || '(no id)'}</strong><span>{ticket['ปัญหา'] || '-'}</span><small>{ticket.status || 'New'} · {ticket['ระดับความเร่งด่วน'] || '-'}</small></button>) : <EmptyState icon={ClipboardList} title="ยังไม่มี ticket" description="เมื่อผู้ใช้บันทึกใบงาน รายการจะแสดงที่นี่" />}</div><Card className="ticket-detail">{selected ? <><div className="sheet-head"><div><h2>{selected.ticketId}</h2><p>{selected.timestamp}</p></div><select value={selected.status || 'New'} onChange={(event) => updateStatus(selected.ticketId, event.target.value)}>{ticketStatusOptions.map((item) => <option key={item}>{item}</option>)}</select></div><dl>{['ปัญหา','ประเภท','ผลกระทบ','ข้อมูลที่ได้รับ','ระดับความเร่งด่วน','ทีมที่เกี่ยวข้อง','requesterName','department','location','contact','ไฟล์แนบ'].map((key) => <React.Fragment key={key}><dt>{key}</dt><dd>{String(selected[key] || '-')}</dd></React.Fragment>)}</dl></> : <EmptyState title="เลือก ticket" description="เลือกรายการด้านซ้ายเพื่อดูรายละเอียด" />}</Card></div>
+  </section>;
+}
+
+function SetupStatusPanel() {
+  const [checks, setChecks] = useState([]);
+  const [notice, setNotice] = useState('');
+  async function api(path, options = {}) {
+    const res = await fetch(path, options);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'request failed');
+    return data;
+  }
+  async function refresh() {
+    const data = await api('/api/admin/setup/status');
+    setChecks(data.checks || []);
+  }
+  useEffect(() => { refresh().catch((error) => setNotice(error.message)); }, []);
+  async function action(kind) {
+    try {
+      if (kind === 'reindex') await api('/api/admin/knowledge/reindex', { method: 'POST' });
+      if (kind === 'ocr') await api('/api/admin/ocr/start', { method: 'POST' });
+      if (kind === 'sheet') await api('/api/admin/setup/test-sheet', { method: 'POST' });
+      if (kind === 'llm') await api('/api/admin/setup/test-llm', { method: 'POST' });
+      setNotice('ดำเนินการแล้ว');
+      await refresh();
+    } catch (error) { setNotice(error.message); }
+  }
+  return <section className="setup-panel">
+    <div className="setup-actions"><Button variant="secondary" onClick={refresh}>รีเฟรช</Button><Button variant="secondary" onClick={() => action('reindex')}>Reindex knowledge</Button><Button variant="secondary" onClick={() => action('ocr')}>Start OCR</Button><Button variant="secondary" onClick={() => action('sheet')}>Test Sheet</Button><Button variant="secondary" onClick={() => action('llm')}>Test LLM</Button></div>
+    {notice ? <div className="notice">{notice}</div> : null}
+    <div className="check-grid">{checks.map((check) => <Card key={check.id} className="check-card"><StatusPill tone={check.state === 'pass' ? 'ok' : check.state === 'warn' ? 'warning' : 'danger'}>{check.state}</StatusPill><h3>{check.label}</h3><p>{check.detail}</p>{check.ready ? null : <small>{check.nextStep}</small>}</Card>)}</div>
+  </section>;
 }
 
 function App() {

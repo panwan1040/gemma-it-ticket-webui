@@ -53,3 +53,7 @@ TYPHOON_OCR_MODEL=scb10x/typhoon-ocr1.5-3b
 - First install can take a long time because the models are several GB.
 - If `pdftoppm` is not found after installing Poppler, open a new PowerShell window and run again.
 - If Ollama is already running, the run script reuses it.
+
+## Admin password
+
+Set `ADMIN_AUTH` in `.env` before real use. Production mode refuses unsafe defaults.

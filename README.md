@@ -69,13 +69,13 @@ http://127.0.0.1:3000/admin       Protected admin document library
 
 The general user navigation only shows the ticket intake and knowledge chat pages. Admins open `/admin` directly.
 
-Default admin auth comes from `.env`:
+Admin auth comes from `.env` and protects `/admin` plus admin APIs.
 
 ```zsh
-ADMIN_AUTH=admin:change-me
+ADMIN_AUTH=admin:use-a-long-random-password
 ```
 
-Change this before real use.
+In development, the server can run without `ADMIN_AUTH` and will log that a dev-only fallback is active. In production, `NODE_ENV=production npm start` fails fast if `ADMIN_AUTH` is missing or set to an unsafe default such as `admin:change-me`. The server never logs the credential value.
 
 ## One-command run behavior
 
@@ -133,7 +133,7 @@ LLM_MODEL=gemma4-e4b-qat
 PORT=3000
 
 GOOGLE_SHEET_WEBHOOK_URL=
-ADMIN_AUTH=admin:change-me
+ADMIN_AUTH=admin:use-a-long-random-password
 
 TYPHOON_OCR_BASE_URL=http://127.0.0.1:11434
 TYPHOON_OCR_MODEL=scb10x/typhoon-ocr1.5-3b
@@ -147,6 +147,15 @@ Secrets stay server-side:
 
 - `ADMIN_AUTH`
 - `GOOGLE_SHEET_WEBHOOK_URL`
+
+## Production hardening notes
+
+- Set `ADMIN_AUTH` before real use. Unsafe defaults are rejected when `NODE_ENV=production`.
+- Admin-only APIs include model selection, model listing, RAG search, ticket dashboard, diagnostics, knowledge management, OCR parsing, and attachment downloads.
+- Uploaded files are stored under `data/attachments/` and are not served as public static files. Admin downloads go through `/api/admin/attachments/:day/:filename`.
+- Ticket saves generate IDs like `IT-YYYYMMDD-0001` and start with status `New`.
+- Rate limits are in-memory and configurable through `.env`. Defaults: general 120/15m, chat 30/15m, upload/OCR 10/15m, tickets 30/15m.
+- RAG prompt context is capped by `RAG_MAX_DOCS`, `RAG_MAX_CHARS_PER_DOC`, and `RAG_MAX_TOTAL_CONTEXT_CHARS`.
 
 ## Google Sheets webhook
 
