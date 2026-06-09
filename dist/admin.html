@@ -359,6 +359,16 @@
 
       document.querySelector('#deleteBtn').onclick = async () => {
         if (!currentPath) return toast('เลือกเอกสารก่อน');
+        const isSavedFile = notes.some((note) => note.path === currentPath);
+        if (!isSavedFile) {
+          editor.value = '';
+          currentPath = '';
+          currentPathInput.value = '';
+          showNotice('');
+          toast('ทิ้ง draft ที่ยังไม่ได้บันทึกแล้ว');
+          renderAll();
+          return;
+        }
         if (!confirm(`ลบ ${currentPath}?`)) return;
         const data = await api('/api/admin/knowledge/file', { method: 'DELETE', body: JSON.stringify({ path: currentPath }) });
         editor.value = '';

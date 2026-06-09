@@ -7,7 +7,7 @@ LLAMA_SERVER="${LLAMA_SERVER:-$LOCAL_LLAMA_SERVER}"
 MODEL_SIZE="${MODEL_SIZE:-e4b}"
 HOST="${HOST:-0.0.0.0}"
 PORT="${LLM_PORT:-18080}"
-CTX_SIZE="${CTX_SIZE:-8192}"
+CTX_SIZE="${CTX_SIZE:-}"
 BATCH_SIZE="${BATCH_SIZE:-1024}"
 UBATCH_SIZE="${UBATCH_SIZE:-256}"
 THREADS="${THREADS:-4}"
@@ -16,6 +16,7 @@ case "$MODEL_SIZE" in
   e4b|E4B)
     MODEL="${MODEL:-$ROOT_DIR/models/gemma-4-e4b-qat/gemma-4-E4B_q4_0-it.gguf}"
     ALIAS="gemma4-e4b-qat"
+    CTX_SIZE="${CTX_SIZE:-8192}"
     ;;
   12b|12B)
     MODEL="${MODEL:-$ROOT_DIR/models/gemma-4-12b-qat/gemma-4-12b-it-qat-q4_0.gguf}"

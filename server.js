@@ -17,6 +17,11 @@ const ragIndexPath = path.join(process.cwd(), 'data', 'rag-index.json');
 const staticDir = path.join(process.cwd(), 'dist');
 const knowledgeDir = path.join(process.cwd(), 'knowledge');
 const adminAuth = process.env.ADMIN_AUTH || 'admin:icetong';
+const appConfig = {
+  appName: process.env.APP_NAME || 'Local AI Helpdesk',
+  appTagline: process.env.APP_TAGLINE || 'AI-assisted ticket intake for internal support teams',
+  appDescription: process.env.APP_DESCRIPTION || 'Collect issue details, draft tickets, and save them to your support workflow.'
+};
 const typhoonBaseUrl = process.env.TYPHOON_OCR_BASE_URL || 'http://127.0.0.1:11434';
 const typhoonModel = process.env.TYPHOON_OCR_MODEL || 'scb10x/typhoon-ocr1.5-3b';
 const typhoonMaxPdfPages = Math.max(1, Math.min(Number(process.env.TYPHOON_OCR_MAX_PDF_PAGES || 3), 10));
@@ -37,11 +42,14 @@ You may receive Relevant Knowledge from SOPs, assets, or previous incidents. Use
 
 Style:
 - Clean, concise, professional.
+- Use short bullet points when listing known details or questions.
+- Avoid long paragraphs. Keep each paragraph under 2 short sentences.
 - Accept and triage the reported issue category directly; never say you only support CCTV/NVR.
 - Ask smart follow-up questions, not generic checklists.
 - Ask at most 3 questions per reply.
+- Prefer natural concise questions such as asking for callback phone, exact building/area, department, affected device, and whether there is anything else to add.
 - Prioritize questions that change urgency, routing, asset identification, or first action.
-- If enough information exists, stop asking and say the ticket is ready to save.
+- If enough information exists, stop asking, say IT has enough information to open a ticket, mention that IT will contact the requester back, summarize known details as bullets, and ask if there is anything else to add.
 
 Return exactly one JSON object:
 {
@@ -69,6 +77,8 @@ Category triage priorities:
 Readiness rules:
 - Ready when support can take first action: category, affected asset/location, symptom, impact, and rough scope/urgency.
 - Do not block saving because screenshot or exact start time is missing; list it as optional missing info.
+- If missing only contact, exact sub-location, department, or optional evidence, ask briefly instead of producing a long explanation.
+- If the user does not know technical details, do not press them for model names. Ask for observable symptoms and location instead.
 
 Urgency rules:
 - Critical: safety risk, site-wide outage, business stopped, NVR/all critical cameras down.
@@ -404,10 +414,10 @@ function fallbackTriage(message, history = []) {
   const isPrinter = /ปริ้น|ปริน|printer|พิมพ์|เครื่องพิมพ์/i.test(allText);
   const category = isCctv ? 'CCTV/NVR' : isPrinter ? 'Printer' : 'Other';
   const reply = isPrinter
-    ? 'รับทราบครับ รบกวนขอข้อมูลเพิ่ม 3 จุดครับ: 1. ชื่อหรือจุดติดตั้งเครื่องปริ้นเตอร์ 2. อาการหรือ error ที่ขึ้น 3. เป็นทุกเครื่องหรือเฉพาะเครื่องของคุณครับ'
+    ? 'รับทราบครับ ขอข้อมูลเพิ่มนิดนึงครับ\n\n- เครื่องปริ้นอยู่บริเวณไหนของอาคาร/ชั้นไหนครับ\n- แผนกอะไรครับ\n- ขอเบอร์โทรติดต่อกลับได้ไหมครับ'
     : isCctv
-      ? 'รับทราบครับ รบกวนขอข้อมูลเพิ่ม 3 จุดครับ: 1. ชื่อกล้องหรือบริเวณที่มีปัญหา 2. ดูไม่ได้ทุกเครื่องหรือเฉพาะเครื่องคุณ 3. อาการเป็นภาพดำ/no signal/offline/ภาพค้างแบบไหนครับ'
-      : 'รับทราบครับ รบกวนขอข้อมูลเพิ่ม 3 จุดครับ: 1. อุปกรณ์หรือระบบที่มีปัญหา 2. อาการหรือ error ที่พบ 3. กระทบผู้ใช้กี่คนหรือเริ่มเป็นตั้งแต่เมื่อไหร่ครับ';
+      ? 'รับทราบครับ ขอข้อมูลเพิ่มนิดนึงครับ\n\n- กล้องอยู่บริเวณไหนครับ\n- ดูไม่ได้ทุกเครื่องหรือเฉพาะเครื่องคุณครับ\n- ขอเบอร์โทรติดต่อกลับได้ไหมครับ'
+      : 'รับทราบครับ ขอข้อมูลเพิ่มนิดนึงครับ\n\n- อาคาร/บริเวณไหนครับ\n- แผนกอะไรครับ\n- ขอเบอร์โทรติดต่อกลับได้ไหมครับ';
   return {
     agentReply: reply,
     isReadyToSave: false,
@@ -486,19 +496,26 @@ async function saveTicket(ticket, sourceMessage, agentReply, transcript = []) {
   await fs.appendFile(localLogPath, `${JSON.stringify(row)}\n`, 'utf8');
   await saveIncidentNote(row).catch(() => {});
 
+  const result = { row, localSaved: true, webhookEnabled: Boolean(sheetWebhookUrl), webhookOk: false, webhookError: '' };
+
   if (sheetWebhookUrl) {
-    const response = await fetch(sheetWebhookUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(row)
-    });
-    if (!response.ok) {
-      const body = await response.text();
-      throw new Error(`Google Sheet webhook HTTP ${response.status}: ${body.slice(0, 200)}`);
+    try {
+      const response = await fetch(sheetWebhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(row)
+      });
+      if (!response.ok) {
+        const body = await response.text();
+        throw new Error(`Google Sheet webhook HTTP ${response.status}: ${body.slice(0, 200)}`);
+      }
+      result.webhookOk = true;
+    } catch (error) {
+      result.webhookError = error.message;
     }
   }
 
-  return row;
+  return result;
 }
 
 app.get('/admin', requireAdmin, (_req, res) => {
@@ -715,6 +732,10 @@ app.get('/api/health', (_req, res) => {
   res.json({ ok: true, llmBaseUrl, llmModel, sheetEnabled: Boolean(sheetWebhookUrl) });
 });
 
+app.get('/api/config', (_req, res) => {
+  res.json({ ok: true, ...appConfig });
+});
+
 app.get('/api/rag/search', async (req, res) => {
   const q = String(req.query.q || '');
   res.json(await searchKnowledge(q));
@@ -822,7 +843,14 @@ app.post('/api/tickets', async (req, res) => {
 
   try {
     const saved = await saveTicket(ticket, sourceMessage, agentReply, transcript);
-    res.json({ ok: true, saved, sheetEnabled: Boolean(sheetWebhookUrl) });
+    res.json({
+      ok: true,
+      saved: saved.row,
+      localSaved: saved.localSaved,
+      sheetEnabled: saved.webhookEnabled,
+      webhookOk: saved.webhookOk,
+      webhookError: saved.webhookError
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

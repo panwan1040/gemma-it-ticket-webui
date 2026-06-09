@@ -4,10 +4,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 
-trap 'kill 0' INT TERM EXIT
+echo "scripts/dev_all.sh is kept for compatibility."
+echo "Recommended command: npm run local"
+echo ""
 
-scripts/start_model.sh &
-sleep 3
-scripts/start_webui.sh &
-
-wait
+exec scripts/run_local.sh

@@ -1,92 +1,251 @@
-# Gemma IT Ticket WebUI
+# Local AI Helpdesk
 
-Local Web UI สำหรับทดสอบ Agent รับแจ้งปัญหา IT/CCTV, สรุป Ticket, และบันทึกลง Google Sheet ผ่าน Apps Script webhook.
+Local-first, self-hosted IT helpdesk web app for Thai support workflows.
 
-## ใช้ทำอะไร
+The app helps internal support teams collect issue details, draft a work order, save tickets locally, optionally send rows to Google Sheets, and answer questions from a local knowledge library.
 
-- รับข้อความ เช่น `กล้องหน้าโกดังดูไม่ได้`
-- ให้ Agent ถามข้อมูลเพิ่มเป็นภาษาไทย
-- สรุป Ticket เป็นฟิลด์สำหรับ Google Sheet
-- ใช้ Gemma 4 12B QAT 4-bit แบบ local ผ่าน `llama.cpp`
-- ถ้าไม่ได้เปิดโมเดล จะ fallback ด้วย rules เพื่อทดสอบ UI ได้
-- เพิ่ม knowledge ผ่าน `/admin` โดยลากไฟล์ Markdown/Text หรือให้ Typhoon OCR แปลง PDF/รูปเป็น Markdown ก่อนเข้า RAG
+## Features
 
-## ติดตั้งพร้อมโมเดลบนเครื่องใหม่
+- Thai-first IT ticket intake assistant
+- Local Gemma model through `llama.cpp`
+- Work order draft with editable fields
+- Local ticket log at `data/tickets.jsonl`
+- Optional Google Sheets webhook
+- Document Library admin page at `/admin`
+- Knowledge chat page at `/knowledge-chat`
+- Optional Typhoon OCR worker for PDF/image ingestion
+- Local RAG over Markdown files in `knowledge/`
+- Open-source friendly app branding through `.env`
 
-```zsh
-npm install
-scripts/install_local.sh
-scripts/install_typhoon_ocr.sh
-```
+## Recommended machine
 
-สคริปต์นี้จะติดตั้ง/ตรวจ `llama.cpp`, ติดตั้ง Hugging Face downloader, ดาวน์โหลดโมเดล GGUF ลง `models/gemma-4-12b-qat/`, และสร้าง `.env` ถ้ายังไม่มี
+- Apple Silicon Mac
+- macOS latest stable
+- 16GB unified memory or more
+- Homebrew installed
 
-โมเดลไม่ถูก commit เข้า git เพราะไฟล์ใหญ่มาก ให้แต่ละเครื่องดาวน์โหลดด้วยสคริปต์นี้แทน
+Default setup uses Gemma E4B QAT because it is smoother on 16GB machines than 12B.
 
-Typhoon OCR ใช้ Ollama build `scb10x/typhoon-ocr1.5-3b` สำหรับแปลง PDF/รูปในหน้า `/admin` ขนาดประมาณ 3GB+ และไม่ควรเปิดทำงานพร้อมงานหนักตลอดเวลาบน Mac 16GB ถ้าไม่จำเป็น
+## Quick start on a new machine
 
-บน macOS สคริปต์จะใช้ `ollama-app`/`/Applications/Ollama.app/Contents/Resources/ollama` เป็นหลัก เพราะ Homebrew formula `ollama` บางรุ่น 0.30.x บน Apple Silicon มี known issue ที่ขาด `llama-server` helper
-
-## เปิดใช้งานแบบแยก 2 Terminal
-
-Terminal 1 เปิดโมเดล local:
-
-```zsh
-scripts/start_model.sh
-```
-
-Terminal 2 เปิด Web UI:
+Clone the repo, then run setup once:
 
 ```zsh
-scripts/start_webui.sh
+npm run setup
 ```
 
-เปิดหน้าเว็บ:
+This command will:
+
+- create `.env` from `.env.example` if missing
+- install npm dependencies
+- build latest `llama.cpp` with Metal support
+- download the default Gemma E4B QAT GGUF model
+- install the Typhoon OCR worker through Ollama app on macOS
+- install Poppler for PDF page conversion
+- build the production web UI
+- index the knowledge folder
+
+Then run everything with one command:
+
+```zsh
+npm run local
+```
+
+Open:
 
 ```text
 http://127.0.0.1:3000
 ```
 
-## เปิดทั้งโมเดลและ Web UI พร้อมกัน
+Useful pages:
 
-```zsh
-scripts/dev_all.sh
+```text
+http://127.0.0.1:3000             IT ticket intake
+http://127.0.0.1:3000/knowledge-chat
+http://127.0.0.1:3000/admin
 ```
 
-## ค่าโมเดลที่ตั้งไว้
-
-- Model default: `Gemma 4 E4B QAT Q4_0 GGUF`
-- Context default: `8192` for E4B, `16384` optional for 12B
-- Batch size: `1024`
-- Micro-batch: `256`
-- GPU layers: `99`
-- Metal: ใช้อัตโนมัติผ่าน `llama.cpp` บน Apple Silicon
-- KV cache: `q8_0` ทั้ง K และ V
-- Reasoning: `off` เพื่อให้ API ส่ง JSON ใน `message.content` เสถียรกว่า
-- Server: `http://127.0.0.1:18080/v1`
-
-ถ้า Mac 16GB เริ่ม swap ให้ลด context:
+Default admin auth comes from `.env`:
 
 ```zsh
-CTX_SIZE=8192 scripts/start_model.sh
+ADMIN_AUTH=admin:change-me
 ```
 
-## Google Sheet
+Change this before real use.
 
-1. สร้าง Google Sheet ใหม่
-2. ไปที่ Extensions > Apps Script
-3. วางโค้ดจาก `google-apps-script.gs`
-4. Deploy > New deployment > Web app
-5. Execute as: Me
-6. Who has access: Anyone with the link
-7. Copy Web app URL
-8. ใส่ใน `.env`
+## One-command run behavior
+
+`npm run local` starts:
+
+- OCR worker, if available
+- local Gemma model server on `127.0.0.1:18080`
+- web UI on `127.0.0.1:3000`
+
+If a service is already running, the script leaves it alone.
+
+Stop services started by the command with:
+
+```text
+Ctrl+C
+```
+
+## Setup options
+
+Install 12B instead of E4B:
+
+```zsh
+MODEL_SIZE=12b npm run setup
+```
+
+Skip OCR installation:
+
+```zsh
+INSTALL_OCR=0 npm run setup
+```
+
+Run without starting OCR:
+
+```zsh
+START_OCR=0 npm run local
+```
+
+Use a different context size:
+
+```zsh
+CTX_SIZE=4096 npm run local
+```
+
+## Configuration
+
+Edit `.env`:
+
+```zsh
+APP_NAME=Local AI Helpdesk
+APP_TAGLINE=AI-assisted ticket intake for internal support teams
+APP_DESCRIPTION=Collect issue details, draft tickets, and save them to your support workflow.
+
+LLM_BASE_URL=http://127.0.0.1:18080/v1
+LLM_MODEL=gemma4-e4b-qat
+PORT=3000
+
+GOOGLE_SHEET_WEBHOOK_URL=
+ADMIN_AUTH=admin:change-me
+
+TYPHOON_OCR_BASE_URL=http://127.0.0.1:11434
+TYPHOON_OCR_MODEL=scb10x/typhoon-ocr1.5-3b
+TYPHOON_OCR_MAX_PDF_PAGES=3
+TYPHOON_OCR_MAX_UPLOAD_MB=24
+```
+
+Public branding values are exposed through `/api/config`.
+
+Secrets stay server-side:
+
+- `ADMIN_AUTH`
+- `GOOGLE_SHEET_WEBHOOK_URL`
+
+## Google Sheets webhook
+
+1. Create a Google Sheet.
+2. Go to Extensions > Apps Script.
+3. Paste `google-apps-script.gs`.
+4. Deploy > New deployment > Web app.
+5. Execute as: Me.
+6. Who has access: Anyone with the link.
+7. Copy the Web app URL.
+8. Put it in `.env`.
 
 ```zsh
 GOOGLE_SHEET_WEBHOOK_URL=https://script.google.com/macros/s/xxxx/exec
 ```
 
-ถ้าไม่ตั้ง webhook ระบบจะบันทึก local log ที่ `data/tickets.jsonl`
+If the webhook is empty, tickets are still saved locally.
+
+If local save succeeds but webhook fails, the UI shows:
+
+```text
+บันทึกในเครื่องแล้ว แต่ส่ง webhook ไม่สำเร็จ
+```
+
+## Knowledge library
+
+Markdown knowledge files live in:
+
+```text
+knowledge/
+```
+
+Admin page:
+
+```text
+http://127.0.0.1:3000/admin
+```
+
+Workflow:
+
+```text
+Add document -> OCR draft if needed -> Review Markdown -> Save to knowledge library -> Ask in Knowledge Chat
+```
+
+Reindex manually:
+
+```zsh
+npm run index:knowledge
+```
+
+Knowledge chat:
+
+```text
+http://127.0.0.1:3000/knowledge-chat
+```
+
+## OCR notes
+
+Typhoon OCR is optional but useful for PDF/image documents.
+
+Install or refresh OCR:
+
+```zsh
+scripts/install_typhoon_ocr.sh
+```
+
+On macOS, the script prefers:
+
+```text
+/Applications/Ollama.app/Contents/Resources/ollama
+```
+
+This avoids Homebrew formula issues where some Ollama builds miss the helper binary used during inference.
+
+By default, PDF OCR is limited to the first 3 pages per file to reduce memory pressure.
+
+## Model defaults
+
+Default:
+
+- Model: Gemma E4B QAT Q4 GGUF
+- Context: 8192
+- Batch size: 1024
+- Micro-batch: 256
+- GPU layers: 99
+- Metal: enabled through `llama.cpp`
+- KV cache: `q8_0`
+- Reasoning: off
+- Server: `http://127.0.0.1:18080/v1`
+
+Download model manually:
+
+```zsh
+MODEL_SIZE=e4b scripts/download_model.sh
+MODEL_SIZE=12b scripts/download_model.sh
+```
+
+Start model manually:
+
+```zsh
+MODEL_SIZE=e4b CTX_SIZE=8192 scripts/start_model.sh
+MODEL_SIZE=12b CTX_SIZE=8192 scripts/start_model.sh
+```
 
 ## Memory monitoring
 
@@ -96,111 +255,42 @@ vm_stat
 top -o mem
 ```
 
+For Mac 16GB:
 
-## เลือกโมเดล
+- prefer E4B
+- keep context at 8192 or lower
+- avoid running 12B and OCR-heavy PDF jobs at the same time
+- lower `CTX_SIZE` to `4096` if swap grows
 
-ค่า default ตอนนี้คือ E4B QAT เพราะเหมาะกับ Mac 16GB มากกว่า 12B สำหรับงาน Ticket/RAG เบาๆ
-
-ดาวน์โหลด E4B:
-
-```zsh
-MODEL_SIZE=e4b scripts/download_model.sh
-```
-
-เปิด E4B:
+## Development commands
 
 ```zsh
-MODEL_SIZE=e4b CTX_SIZE=8192 scripts/start_model.sh
-```
-
-กลับไปใช้ 12B:
-
-```zsh
-MODEL_SIZE=12b scripts/download_model.sh
-MODEL_SIZE=12b CTX_SIZE=16384 scripts/start_model.sh
-```
-
-
-## Chat triage mode
-
-Web UI ตอนนี้เป็น multi-turn chat:
-
-- ผู้ใช้ส่งข้อความได้หลายรอบ
-- Agent ใช้บริบทบทสนทนาล่าสุดเพื่ออัปเดต Ticket draft
-- ผู้ใช้แก้ field เองได้ก่อนบันทึก
-- กดบันทึกเมื่อคิดว่าข้อมูลครบแล้วได้เลย
-- Transcript จะถูกส่งไป Google Sheet ด้วยในคอลัมน์ `transcript`
-
-## Apps Script note
-
-อย่ากด Run ที่ `doPost` ตรงๆ เพราะ Apps Script จะไม่มี `e.postData` ให้ ทำให้เกิด error ได้
-
-ถ้าต้องการทดสอบใน Apps Script editor ให้ Run ฟังก์ชัน `testDoPost` แทน
-
-## Local knowledge vault / RAG
-
-โปรเจกต์มี knowledge vault แบบ Markdown ที่ `knowledge/` เพื่อใช้กับ local RAG:
-
-```text
-knowledge/SOP/
-knowledge/Assets/
-knowledge/Incidents/
-```
-
-สร้าง index ใหม่หลังเพิ่มหรือแก้ note:
-
-```zsh
+npm run build
+npm start
+npm run dev
+npm run dev:api
 npm run index:knowledge
 ```
 
-ค้น knowledge ผ่าน API:
-
-```text
-/api/rag/search?q=กล้องหน้าโกดัง
-```
-
-เมื่อบันทึก ticket ระบบจะสร้าง incident note ลง `knowledge/Incidents/` ด้วย เพื่อให้เคสเก่ากลับมาเป็น context ในรอบถัดไป
-
-ถ้าใช้ Obsidian ให้เปิดโฟลเดอร์ `knowledge/` เป็น vault ได้ทันที หรือย้าย `knowledge/` ไปอยู่ใน Obsidian vault แล้ว symlink กลับมาในโปรเจกต์นี้
-
-## Document Library / Admin workflow
-
-หน้า `/admin` ถูกออกแบบให้ user ทั่วไปใช้เป็น Document Library:
-
-```text
-เพิ่มเอกสาร -> ระบบอ่าน PDF/รูปให้อัตโนมัติ -> ตรวจ Markdown draft -> บันทึกเข้าคลังความรู้ -> ถามใน /knowledge-chat
-```
-
-ติดตั้ง OCR worker:
+Legacy scripts still work:
 
 ```zsh
-scripts/install_typhoon_ocr.sh
+scripts/start_model.sh
+scripts/start_webui.sh
+scripts/dev_all.sh
 ```
 
-โดยปกติหน้า `/admin` จะพยายามเปิด OCR worker ให้อัตโนมัติเมื่อมีการเพิ่ม PDF/รูป ถ้าเครื่องเพิ่ง reboot และต้องการเปิดเอง:
+For new installs, prefer:
 
 ```zsh
-/Applications/Ollama.app/Contents/Resources/ollama serve
+npm run setup
+npm run local
 ```
 
-ค่า `.env` ที่เกี่ยวข้อง:
+## Notes for open-source reuse
 
-```zsh
-TYPHOON_OCR_BASE_URL=http://127.0.0.1:11434
-TYPHOON_OCR_MODEL=scb10x/typhoon-ocr1.5-3b
-TYPHOON_OCR_MAX_PDF_PAGES=3
-TYPHOON_OCR_MAX_UPLOAD_MB=24
-```
-
-ข้อควรใช้แบบ production:
-
-- OCR output จะเปิดเป็น draft ก่อน ยังไม่เข้า RAG จนกด `บันทึกเข้าคลังความรู้`
-- จำกัด PDF 3 หน้าแรกต่อไฟล์เป็นค่าเริ่มต้น เพื่อลด RAM/swap
-- ถ้าเอกสารยาว ให้แยกเป็นส่วน หรือเพิ่ม `TYPHOON_OCR_MAX_PDF_PAGES` เฉพาะตอนต้องการ
-- ถ้า OCR worker ทำให้เครื่อง swap ให้ปิด Ollama ชั่วคราวด้วย `brew services stop ollama` แล้วใช้เฉพาะตอนอัปโหลดเอกสาร
-
-หน้าแชทถามเอกสารโดยเฉพาะ:
-
-```text
-http://127.0.0.1:3000/knowledge-chat
-```
+- Do not commit `.env`.
+- Do not commit model files.
+- Put organization-specific SOPs in `knowledge/`, not in source code.
+- Rename the app through `.env` instead of editing React components.
+- Keep private workflow details out of prompts and defaults.

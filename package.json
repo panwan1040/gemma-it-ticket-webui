@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "start": "node server.js",
+    "setup": "scripts/setup.sh",
+    "local": "scripts/run_local.sh",
     "dev": "vite --host 127.0.0.1 --port 5173",
     "dev:api": "node --watch server.js",
     "build": "vite build",
