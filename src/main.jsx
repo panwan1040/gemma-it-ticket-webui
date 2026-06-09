@@ -14,7 +14,6 @@ import {
   RefreshCcw,
   Save,
   Search,
-  ImagePlus,
   Send,
   Sparkles,
   User,
@@ -143,7 +142,7 @@ function ChatBubble({ item }) {
   );
 }
 
-function ChatPane({ messages, input, setInput, sendMessage, isThinking, resetChat, mode, handleImageFiles, isOcrBusy }) {
+function ChatPane({ messages, input, setInput, sendMessage, isThinking, resetChat, mode }) {
   return (
     <section className="flex min-h-0 flex-1 flex-col bg-slate-50">
       <header className="flex h-16 shrink-0 items-center justify-between border-b border-zinc-200 bg-white px-4 sm:px-6">
@@ -192,11 +191,7 @@ function ChatPane({ messages, input, setInput, sendMessage, isThinking, resetCha
                 <button key={sample} onClick={() => setInput(sample)} className="shrink-0 rounded-full border border-zinc-200 px-3 py-1.5 text-xs text-zinc-500 hover:bg-zinc-50">{sample}</button>
               ))}
             </div>
-            <label className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-xl border border-zinc-200 bg-white px-3.5 py-2.5 text-sm font-medium text-zinc-700 transition hover:bg-zinc-50">
-                {isOcrBusy ? <Loader2 className="spin" size={16} /> : <ImagePlus size={16} />} Image
-                <input className="hidden" type="file" accept="image/*" multiple onChange={(event) => handleImageFiles(event.target.files)} />
-              </label>
-              <Button onClick={sendMessage} disabled={!input.trim() || isThinking}>{isThinking ? <Loader2 className="spin" size={16} /> : <Send size={16} />} Send</Button>
+            <Button onClick={sendMessage} disabled={!input.trim() || isThinking}>{isThinking ? <Loader2 className="spin" size={16} /> : <Send size={16} />} Send</Button>
           </div>
         </div>
       </div>
@@ -298,46 +293,11 @@ function App() {
   const [isReady, setIsReady] = useState(false);
   const [isThinking, setIsThinking] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
-  const [isOcrBusy, setIsOcrBusy] = useState(false);
   const [saveStatus, setSaveStatus] = useState('');
   const [lastAgentReply, setLastAgentReply] = useState('');
   const [ragContext, setRagContext] = useState({ items: [], count: 0 });
   const [models, setModels] = useState([]);
   const [selectedModel, setSelectedModel] = useState('');
-
-  async function fileToDataUrl(file) {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result);
-      reader.onerror = reject;
-      reader.readAsDataURL(file);
-    });
-  }
-
-  async function handleImageFiles(fileList) {
-    const files = [...(fileList || [])].filter((file) => file.type.startsWith('image/'));
-    if (!files.length || isOcrBusy) return;
-    setIsOcrBusy(true);
-    try {
-      const summaries = [];
-      for (const file of files.slice(0, 4)) {
-        const image = await fileToDataUrl(file);
-        const response = await fetch('/api/ocr', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: file.name, image })
-        });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error || 'OCR failed');
-        summaries.push(`รูปภาพ: ${file.name}\nข้อความที่ OCR อ่านได้:\n${data.text || '(อ่านตัวอักษรไม่พบ)'}\nความมั่นใจ OCR: ${Math.round(data.confidence || 0)}%`);
-      }
-      setInput((current) => [current, ...summaries].filter(Boolean).join('\n\n'));
-    } catch (error) {
-      setInput((current) => [current, `OCR รูปภาพไม่สำเร็จ: ${error.message}`].filter(Boolean).join('\n\n'));
-    } finally {
-      setIsOcrBusy(false);
-    }
-  }
 
   async function loadModels() {
     try {
@@ -437,7 +397,7 @@ function App() {
       <Sidebar resetChat={resetChat} mode={mode} knowledgeCount={ragContext.count || 0} models={models} selectedModel={selectedModel} selectModel={selectModel} />
       <div className="flex min-w-0 flex-1 flex-col">
         <div className="flex min-h-0 flex-1">
-          <ChatPane messages={messages} input={input} setInput={setInput} sendMessage={sendMessage} isThinking={isThinking} resetChat={resetChat} mode={mode} handleImageFiles={handleImageFiles} isOcrBusy={isOcrBusy} />
+          <ChatPane messages={messages} input={input} setInput={setInput} sendMessage={sendMessage} isThinking={isThinking} resetChat={resetChat} mode={mode} />
           <TicketPanel ticket={ticket} setTicket={setTicket} isReady={isReady} missingFields={missingFields} saveTicket={saveTicket} isSaving={isSaving} saveStatus={saveStatus} ragContext={ragContext} />
         </div>
         <MobileTicketBar ticket={ticket} saveTicket={saveTicket} isSaving={isSaving} />

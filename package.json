@@ -9,8 +9,7 @@
     "dev:api": "node --watch server.js",
     "build": "vite build",
     "index:knowledge": "node scripts/index_knowledge.js",
-    "preview": "vite preview --host 127.0.0.1 --port 4173",
-    "smoke:test": "node scripts/smoke_test.js"
+    "preview": "vite preview --host 127.0.0.1 --port 4173"
   },
   "dependencies": {
     "@react-three/drei": "latest",
@@ -21,7 +20,6 @@
     "lucide-react": "latest",
     "react": "latest",
     "react-dom": "latest",
-    "tesseract.js": "^7.0.0",
     "three": "latest"
   },
   "devDependencies": {

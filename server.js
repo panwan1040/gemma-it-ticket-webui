@@ -2,7 +2,6 @@ import 'dotenv/config';
 import express from 'express';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { createWorker } from 'tesseract.js';
 
 const app = express();
 const port = Number(process.env.PORT || 3000);
@@ -14,7 +13,6 @@ const ragIndexPath = path.join(process.cwd(), 'data', 'rag-index.json');
 const staticDir = path.join(process.cwd(), 'dist');
 const knowledgeDir = path.join(process.cwd(), 'knowledge');
 const adminAuth = process.env.ADMIN_AUTH || 'admin:icetong';
-let ocrWorkerPromise = null;
 
 
 app.use(express.json({ limit: '2mb' }));
@@ -82,37 +80,6 @@ function requireAdmin(req, res, next) {
     return;
   }
   next();
-}
-
-async function getOcrWorker() {
-  if (!ocrWorkerPromise) {
-    ocrWorkerPromise = createWorker('eng');
-  }
-  return ocrWorkerPromise;
-}
-
-function parseDataUrl(dataUrl) {
-  const match = String(dataUrl || '').match(/^data:([^;]+);base64,(.+)$/);
-  if (!match) throw new Error('image must be a base64 data URL');
-  const mimeType = match[1];
-  if (!['image/png', 'image/jpeg', 'image/jpg', 'image/webp'].includes(mimeType)) throw new Error('OCR supports PNG, JPEG, or WebP images');
-  const buffer = Buffer.from(match[2], 'base64');
-  if (buffer.length > 8 * 1024 * 1024) throw new Error('image is too large; max 8MB');
-  return { mimeType, buffer };
-}
-
-async function ocrImage(dataUrl) {
-  const { buffer, mimeType } = parseDataUrl(dataUrl);
-  const worker = await getOcrWorker();
-  try {
-    const result = await worker.recognize(buffer);
-    const text = String(result.data?.text || '').trim();
-    const confidence = Number(result.data?.confidence || 0);
-    return { text, confidence, mimeType };
-  } catch (error) {
-    ocrWorkerPromise = null;
-    throw new Error(`OCR failed: ${error.message || error}`);
-  }
 }
 
 function slugifyFileName(name) {
@@ -491,21 +458,6 @@ app.post('/api/models/select', async (req, res) => {
   }
   llmModel = model;
   res.json({ ok: true, selected: llmModel, note: 'Model alias updated for API calls. If llama-server is running a different model, restart it with the matching start command.' });
-});
-
-app.post('/api/ocr', async (req, res) => {
-  try {
-    const image = String(req.body?.image || '');
-    const name = String(req.body?.name || 'screenshot');
-    if (!image) {
-      res.status(400).json({ error: 'image is required' });
-      return;
-    }
-    const result = await ocrImage(image);
-    res.json({ ok: true, name, ...result });
-  } catch (error) {
-    res.status(400).json({ error: error.message });
-  }
 });
 
 app.get('/api/health', (_req, res) => {
