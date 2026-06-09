@@ -23,6 +23,12 @@
       .dropzone strong { display: block; font-size: 14px; }
       .dropzone span { display: block; margin-top: 6px; font-size: 12px; color: #6366f1; }
       .dropzone input { display: none; }
+      .ocr-card { margin-bottom: 14px; border: 1px solid #e4e4e7; border-radius: 16px; background: white; padding: 14px; }
+      .ocr-card strong { display: block; font-size: 13px; }
+      .ocr-card p { margin: 8px 0 0; color: #71717a; font-size: 12px; line-height: 1.5; }
+      .pill { display: inline-flex; align-items: center; gap: 6px; margin-top: 10px; border-radius: 999px; padding: 5px 9px; background: #f4f4f5; color: #52525b; font-size: 12px; }
+      .pill.ok { background: #ecfdf5; color: #047857; }
+      .pill.warn { background: #fffbeb; color: #b45309; }
       .note { width: 100%; text-align: left; margin-top: 8px; border-radius: 12px; padding: 12px; border: 1px solid #e4e4e7; background: #fafafa; }
       .note.active { border-color: #4f46e5; background: #eef2ff; }
       .note strong { display: block; font-size: 13px; }
@@ -43,10 +49,15 @@
     <main>
       <aside>
         <label id="dropzone" class="dropzone">
-          <input id="fileInput" type="file" multiple accept=".md,.markdown,.txt,.pdf,.doc,.docx" />
+          <input id="fileInput" type="file" multiple accept=".md,.markdown,.txt,.pdf,.png,.jpg,.jpeg,.webp" />
           <strong>ลากไฟล์มาวาง หรือคลิกเพื่อเลือกไฟล์</strong>
-          <span>รองรับ .md และ .txt แบบอ่านเนื้อหาได้ทันที ส่วน .pdf/.docx จะสร้าง note placeholder ให้แก้ต่อ</span>
+          <span>.md/.txt บันทึกได้ทันที ส่วน .pdf/.png/.jpg/.webp จะเข้า Typhoon OCR แล้วเปิดเป็น draft ให้ตรวจก่อน Save</span>
         </label>
+        <div class="ocr-card">
+          <strong>Typhoon OCR worker</strong>
+          <p id="ocrDetail">กำลังตรวจสถานะ OCR...</p>
+          <span id="ocrPill" class="pill warn">checking</span>
+        </div>
         <input id="newPath" placeholder="SOP/wifi-troubleshooting.md" />
         <button id="newBtn" class="primary" style="width:100%;margin-top:8px;">Create / Open</button>
         <p class="hint">Tip: วางไฟล์ SOP, asset list, vendor contact, incident note แล้วระบบจะ save ลง knowledge/Uploads และ reindex อัตโนมัติ</p>
@@ -70,6 +81,7 @@
       const fileInput = document.querySelector('#fileInput');
       let currentPath = '';
       let notes = [];
+      let ocrStatus = null;
 
       function setStatus(text) { statusEl.textContent = text; }
 
@@ -97,6 +109,24 @@
         renderNotes();
       }
 
+      async function loadOcrStatus() {
+        const detail = document.querySelector('#ocrDetail');
+        const pill = document.querySelector('#ocrPill');
+        ocrStatus = await api('/api/admin/ocr/status');
+        detail.textContent = `${ocrStatus.detail}. Model: ${ocrStatus.model}. PDF สูงสุด ${ocrStatus.maxPdfPages} หน้า/ไฟล์.`;
+        pill.textContent = ocrStatus.available ? 'ready' : 'setup needed';
+        pill.className = `pill ${ocrStatus.available ? 'ok' : 'warn'}`;
+      }
+
+      function readFileAsBase64(file) {
+        return new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result || '').split(',')[1] || '');
+          reader.onerror = () => reject(reader.error || new Error('cannot read file'));
+          reader.readAsDataURL(file);
+        });
+      }
+
       async function openNote(path) {
         currentPath = path;
         newPath.value = path;
@@ -114,12 +144,27 @@
         for (const file of files) {
           const ext = file.name.split('.').pop().toLowerCase();
           const canReadText = ['md', 'markdown', 'txt'].includes(ext) || file.type.startsWith('text/');
-          payload.push({
-            name: file.name,
-            type: file.type,
-            content: canReadText ? await file.text() : ''
-          });
+          const canOcr = ['pdf', 'png', 'jpg', 'jpeg', 'webp'].includes(ext) || /^image\/(png|jpe?g|webp)$/i.test(file.type);
+          if (canOcr && !canReadText) {
+            setStatus(`Typhoon OCR parsing ${file.name}...`);
+            const parsed = await api('/api/admin/knowledge/parse-ocr', {
+              method: 'POST',
+              body: JSON.stringify({ file: { name: file.name, type: file.type, base64: await readFileAsBase64(file) } })
+            });
+            currentPath = parsed.path;
+            newPath.value = parsed.path;
+            editor.value = parsed.content;
+            setStatus(`OCR draft ready: ${parsed.path}. ตรวจข้อความแล้วกด Save + Reindex`);
+            renderNotes();
+          } else {
+            payload.push({
+              name: file.name,
+              type: file.type,
+              content: canReadText ? await file.text() : ''
+            });
+          }
         }
+        if (!payload.length) return;
         const data = await api('/api/admin/knowledge/upload', { method: 'POST', body: JSON.stringify({ files: payload }) });
         setStatus(`Uploaded ${data.saved.length} file(s). Indexed ${data.index.count} notes.`);
         await loadNotes();
@@ -170,6 +215,7 @@
       };
 
       loadNotes().catch((error) => setStatus(error.message));
+      loadOcrStatus().catch((error) => setStatus(error.message));
     </script>
   </body>
 </html>

@@ -9,17 +9,23 @@ Local Web UI สำหรับทดสอบ Agent รับแจ้งปั
 - สรุป Ticket เป็นฟิลด์สำหรับ Google Sheet
 - ใช้ Gemma 4 12B QAT 4-bit แบบ local ผ่าน `llama.cpp`
 - ถ้าไม่ได้เปิดโมเดล จะ fallback ด้วย rules เพื่อทดสอบ UI ได้
+- เพิ่ม knowledge ผ่าน `/admin` โดยลากไฟล์ Markdown/Text หรือให้ Typhoon OCR แปลง PDF/รูปเป็น Markdown ก่อนเข้า RAG
 
 ## ติดตั้งพร้อมโมเดลบนเครื่องใหม่
 
 ```zsh
 npm install
 scripts/install_local.sh
+scripts/install_typhoon_ocr.sh
 ```
 
 สคริปต์นี้จะติดตั้ง/ตรวจ `llama.cpp`, ติดตั้ง Hugging Face downloader, ดาวน์โหลดโมเดล GGUF ลง `models/gemma-4-12b-qat/`, และสร้าง `.env` ถ้ายังไม่มี
 
 โมเดลไม่ถูก commit เข้า git เพราะไฟล์ใหญ่มาก ให้แต่ละเครื่องดาวน์โหลดด้วยสคริปต์นี้แทน
+
+Typhoon OCR ใช้ Ollama build `scb10x/typhoon-ocr1.5-3b` สำหรับแปลง PDF/รูปในหน้า `/admin` ขนาดประมาณ 3GB+ และไม่ควรเปิดทำงานพร้อมงานหนักตลอดเวลาบน Mac 16GB ถ้าไม่จำเป็น
+
+บน macOS สคริปต์จะใช้ `ollama-app`/`/Applications/Ollama.app/Contents/Resources/ollama` เป็นหลัก เพราะ Homebrew formula `ollama` บางรุ่น 0.30.x บน Apple Silicon มี known issue ที่ขาด `llama-server` helper
 
 ## เปิดใช้งานแบบแยก 2 Terminal
 
@@ -156,3 +162,39 @@ npm run index:knowledge
 เมื่อบันทึก ticket ระบบจะสร้าง incident note ลง `knowledge/Incidents/` ด้วย เพื่อให้เคสเก่ากลับมาเป็น context ในรอบถัดไป
 
 ถ้าใช้ Obsidian ให้เปิดโฟลเดอร์ `knowledge/` เป็น vault ได้ทันที หรือย้าย `knowledge/` ไปอยู่ใน Obsidian vault แล้ว symlink กลับมาในโปรเจกต์นี้
+
+## Admin document OCR workflow
+
+หน้า `/admin` รองรับ workflow สำหรับเอกสารจริง:
+
+```text
+PDF/Image -> Typhoon OCR 1.5 3B via Ollama -> Markdown draft -> Human review -> Save + Reindex -> Gemma RAG
+```
+
+ติดตั้ง OCR worker:
+
+```zsh
+scripts/install_typhoon_ocr.sh
+```
+
+เปิด OCR worker เองถ้ายังไม่รัน:
+
+```zsh
+/Applications/Ollama.app/Contents/Resources/ollama serve
+```
+
+ค่า `.env` ที่เกี่ยวข้อง:
+
+```zsh
+TYPHOON_OCR_BASE_URL=http://127.0.0.1:11434
+TYPHOON_OCR_MODEL=scb10x/typhoon-ocr1.5-3b
+TYPHOON_OCR_MAX_PDF_PAGES=3
+TYPHOON_OCR_MAX_UPLOAD_MB=24
+```
+
+ข้อควรใช้แบบ production:
+
+- OCR output จะเปิดเป็น draft ก่อน ยังไม่เข้า RAG จนกด `Save + Reindex`
+- จำกัด PDF 3 หน้าแรกต่อไฟล์เป็นค่าเริ่มต้น เพื่อลด RAM/swap
+- ถ้าเอกสารยาว ให้แยกเป็นส่วน หรือเพิ่ม `TYPHOON_OCR_MAX_PDF_PAGES` เฉพาะตอนต้องการ
+- ถ้า OCR worker ทำให้เครื่อง swap ให้ปิด Ollama ชั่วคราวด้วย `brew services stop ollama` แล้วใช้เฉพาะตอนอัปโหลดเอกสาร

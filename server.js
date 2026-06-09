@@ -1,9 +1,13 @@
 import 'dotenv/config';
 import express from 'express';
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 
 const app = express();
+const execFileAsync = promisify(execFile);
 const port = Number(process.env.PORT || 3000);
 const llmBaseUrl = process.env.LLM_BASE_URL || 'http://127.0.0.1:18080/v1';
 let llmModel = process.env.LLM_MODEL || 'gemma4-e4b-qat';
@@ -13,9 +17,13 @@ const ragIndexPath = path.join(process.cwd(), 'data', 'rag-index.json');
 const staticDir = path.join(process.cwd(), 'dist');
 const knowledgeDir = path.join(process.cwd(), 'knowledge');
 const adminAuth = process.env.ADMIN_AUTH || 'admin:icetong';
+const typhoonBaseUrl = process.env.TYPHOON_OCR_BASE_URL || 'http://127.0.0.1:11434';
+const typhoonModel = process.env.TYPHOON_OCR_MODEL || 'scb10x/typhoon-ocr1.5-3b';
+const typhoonMaxPdfPages = Math.max(1, Math.min(Number(process.env.TYPHOON_OCR_MAX_PDF_PAGES || 3), 10));
+const typhoonMaxUploadMb = Math.max(1, Math.min(Number(process.env.TYPHOON_OCR_MAX_UPLOAD_MB || 24), 80));
 
 
-app.use(express.json({ limit: '2mb' }));
+app.use(express.json({ limit: `${Math.max(32, typhoonMaxUploadMb + 8)}mb` }));
 app.use(express.static(staticDir));
 app.use(express.static('public'));
 
@@ -114,6 +122,110 @@ function uploadToMarkdown(file) {
     path: `Uploads/${slug}.md`,
     content: `# ${slug.replaceAll('-', ' ')}\n\nSource file: ${name}\nUploaded at: ${now}\nFile type: ${type || ext}\n\nไฟล์ชนิดนี้ถูกอัปโหลดแล้ว แต่ระบบยังไม่ได้แปลงเนื้อหาอัตโนมัติ กรุณาสรุปหรือวางเนื้อหาสำคัญลงใน note นี้เพื่อใช้เป็น knowledge สำหรับ RAG\n`
   };
+}
+
+function isOcrSupportedFile(name, type = '') {
+  const ext = String(name || '').split('.').pop()?.toLowerCase() || '';
+  return ['pdf', 'png', 'jpg', 'jpeg', 'webp'].includes(ext) || /^image\/(png|jpe?g|webp)$/i.test(type);
+}
+
+function stripDataUrl(value) {
+  return String(value || '').replace(/^data:[^;]+;base64,/, '');
+}
+
+function ocrPrompt(pageLabel) {
+  return `Extract all text from this ${pageLabel}.
+
+Instructions:
+- Return only clean Markdown.
+- Preserve Thai and English text exactly when possible.
+- Include all visible document information.
+- Tables must be rendered as clean HTML <table>...</table>.
+- If there are figures, charts, stamps, logos, or photos, wrap a short Thai description in <figure>...</figure>.
+- If text is unclear, mark it as [อ่านไม่ชัด] instead of guessing.
+- Do not include explanations outside the extracted Markdown.`;
+}
+
+async function writeTempUpload(file) {
+  const name = String(file.name || 'upload');
+  const ext = name.split('.').pop()?.toLowerCase() || 'bin';
+  const safeExt = /^[a-z0-9]+$/.test(ext) ? ext : 'bin';
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gemma-ocr-'));
+  const full = path.join(dir, `upload.${safeExt}`);
+  const base64 = stripDataUrl(file.base64);
+  const sizeMb = Buffer.byteLength(base64, 'base64') / 1024 / 1024;
+  if (!base64 || sizeMb > typhoonMaxUploadMb) {
+    throw new Error(`OCR upload must be base64 and <= ${typhoonMaxUploadMb}MB`);
+  }
+  await fs.writeFile(full, Buffer.from(base64, 'base64'));
+  return { dir, full, ext: safeExt };
+}
+
+async function pdfToImages(pdfPath, outDir) {
+  await execFileAsync('pdfinfo', [pdfPath], { timeout: 15000 });
+  const prefix = path.join(outDir, 'page');
+  await execFileAsync('pdftoppm', ['-png', '-r', '160', '-f', '1', '-l', String(typhoonMaxPdfPages), pdfPath, prefix], { timeout: 120000 });
+  const entries = await fs.readdir(outDir);
+  return entries
+    .filter((name) => /^page-\d+\.png$/.test(name))
+    .sort()
+    .map((name) => path.join(outDir, name));
+}
+
+async function callTyphoonOcr(imagePath, pageLabel) {
+  const imageBase64 = await fs.readFile(imagePath, 'base64');
+  const response = await fetch(`${typhoonBaseUrl}/api/generate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: typhoonModel,
+      prompt: ocrPrompt(pageLabel),
+      images: [imageBase64],
+      stream: false,
+      options: {
+        temperature: 0.1,
+        top_p: 0.6,
+        repeat_penalty: 1.2,
+        num_ctx: 8192
+      }
+    })
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`Typhoon OCR HTTP ${response.status}: ${body.slice(0, 240)}`);
+  }
+
+  const data = await response.json();
+  return String(data.response || '').trim();
+}
+
+async function parseWithTyphoonOcr(file) {
+  if (!isOcrSupportedFile(file.name, file.type)) {
+    throw new Error('OCR supports PDF, PNG, JPG, JPEG, and WEBP only');
+  }
+
+  const temp = await writeTempUpload(file);
+  try {
+    const imagePaths = temp.ext === 'pdf' ? await pdfToImages(temp.full, temp.dir) : [temp.full];
+    if (!imagePaths.length) throw new Error('PDF conversion produced no pages');
+
+    const pages = [];
+    for (let index = 0; index < imagePaths.length; index += 1) {
+      const pageLabel = temp.ext === 'pdf' ? `PDF page ${index + 1}` : 'image';
+      const markdown = await callTyphoonOcr(imagePaths[index], pageLabel);
+      pages.push(`## Page ${index + 1}\n\n${markdown || '[Typhoon OCR returned empty output]'}`);
+    }
+
+    const slug = slugifyFileName(file.name);
+    const now = new Date().toISOString();
+    return {
+      path: `Uploads/${slug}-ocr.md`,
+      content: `# ${slug.replaceAll('-', ' ')} OCR\n\nSource file: ${file.name}\nParsed by: Typhoon OCR 1.5 3B via Ollama\nParsed at: ${now}\nReview status: Needs human review before production use\n\n${pages.join('\n\n---\n\n')}\n`
+    };
+  } finally {
+    await fs.rm(temp.dir, { recursive: true, force: true }).catch(() => {});
+  }
 }
 
 function safeKnowledgePath(relativePath) {
@@ -389,6 +501,43 @@ app.post('/api/admin/knowledge/upload', requireAdmin, async (req, res) => {
 
     const index = await rebuildKnowledgeIndex();
     res.json({ ok: true, saved, index });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.get('/api/admin/ocr/status', requireAdmin, async (_req, res) => {
+  let available = false;
+  let detail = 'Ollama is not reachable';
+  try {
+    const response = await fetch(`${typhoonBaseUrl}/api/tags`);
+    const data = await response.json();
+    const models = Array.isArray(data.models) ? data.models : [];
+    available = response.ok && models.some((model) => String(model.name || '').startsWith(typhoonModel));
+    detail = available ? 'Typhoon OCR model is available' : `Ollama is reachable, but ${typhoonModel} is not pulled yet`;
+  } catch {}
+
+  res.json({
+    ok: true,
+    available,
+    baseUrl: typhoonBaseUrl,
+    model: typhoonModel,
+    maxPdfPages: typhoonMaxPdfPages,
+    maxUploadMb: typhoonMaxUploadMb,
+    detail,
+    installCommand: 'scripts/install_typhoon_ocr.sh'
+  });
+});
+
+app.post('/api/admin/knowledge/parse-ocr', requireAdmin, async (req, res) => {
+  try {
+    const file = req.body?.file;
+    if (!file || typeof file !== 'object') {
+      res.status(400).json({ error: 'file is required' });
+      return;
+    }
+    const note = await parseWithTyphoonOcr(file);
+    res.json({ ok: true, ...note, note: 'Review the OCR draft, then click Save + Reindex to add it to RAG.' });
   } catch (error) {
     res.status(400).json({ error: error.message });
   }

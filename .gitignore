@@ -9,5 +9,6 @@ vendor/
 CMakeFiles/
 build/
 
-# OCR runtime cache
+# OCR/runtime temp cache
 *.traineddata
+.ollama/
