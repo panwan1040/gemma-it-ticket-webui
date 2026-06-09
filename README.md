@@ -163,12 +163,12 @@ npm run index:knowledge
 
 ถ้าใช้ Obsidian ให้เปิดโฟลเดอร์ `knowledge/` เป็น vault ได้ทันที หรือย้าย `knowledge/` ไปอยู่ใน Obsidian vault แล้ว symlink กลับมาในโปรเจกต์นี้
 
-## Admin document OCR workflow
+## Document Library / Admin workflow
 
-หน้า `/admin` รองรับ workflow สำหรับเอกสารจริง:
+หน้า `/admin` ถูกออกแบบให้ user ทั่วไปใช้เป็น Document Library:
 
 ```text
-PDF/Image -> Typhoon OCR 1.5 3B via Ollama -> Markdown draft -> Human review -> Save + Reindex -> Gemma RAG
+เพิ่มเอกสาร -> ระบบอ่าน PDF/รูปให้อัตโนมัติ -> ตรวจ Markdown draft -> บันทึกเข้าคลังความรู้ -> ถามใน /knowledge-chat
 ```
 
 ติดตั้ง OCR worker:
@@ -177,7 +177,7 @@ PDF/Image -> Typhoon OCR 1.5 3B via Ollama -> Markdown draft -> Human review -> 
 scripts/install_typhoon_ocr.sh
 ```
 
-เปิด OCR worker เองถ้ายังไม่รัน:
+โดยปกติหน้า `/admin` จะพยายามเปิด OCR worker ให้อัตโนมัติเมื่อมีการเพิ่ม PDF/รูป ถ้าเครื่องเพิ่ง reboot และต้องการเปิดเอง:
 
 ```zsh
 /Applications/Ollama.app/Contents/Resources/ollama serve
@@ -194,7 +194,13 @@ TYPHOON_OCR_MAX_UPLOAD_MB=24
 
 ข้อควรใช้แบบ production:
 
-- OCR output จะเปิดเป็น draft ก่อน ยังไม่เข้า RAG จนกด `Save + Reindex`
+- OCR output จะเปิดเป็น draft ก่อน ยังไม่เข้า RAG จนกด `บันทึกเข้าคลังความรู้`
 - จำกัด PDF 3 หน้าแรกต่อไฟล์เป็นค่าเริ่มต้น เพื่อลด RAM/swap
 - ถ้าเอกสารยาว ให้แยกเป็นส่วน หรือเพิ่ม `TYPHOON_OCR_MAX_PDF_PAGES` เฉพาะตอนต้องการ
 - ถ้า OCR worker ทำให้เครื่อง swap ให้ปิด Ollama ชั่วคราวด้วย `brew services stop ollama` แล้วใช้เฉพาะตอนอัปโหลดเอกสาร
+
+หน้าแชทถามเอกสารโดยเฉพาะ:
+
+```text
+http://127.0.0.1:3000/knowledge-chat
+```

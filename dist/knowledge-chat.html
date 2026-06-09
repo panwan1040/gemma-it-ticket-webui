@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="th">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Knowledge Chat</title>
+    <style>
+      * { box-sizing: border-box; }
+      :root {
+        --bg: #f4fbf7;
+        --paper: #ffffff;
+        --paper-2: #f7faf8;
+        --line: #dbe7df;
+        --text: #10231a;
+        --muted: #60756a;
+        --accent: #047857;
+        --accent-dark: #064e3b;
+        --accent-soft: #dff8ea;
+        --shadow: 0 24px 80px rgba(6, 78, 59, .11);
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: ui-sans-serif, Inter, Geist, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background:
+          radial-gradient(circle at 18% 8%, rgba(16, 185, 129, .16), transparent 32%),
+          radial-gradient(circle at 86% 2%, rgba(6, 95, 70, .12), transparent 28%),
+          var(--bg);
+        color: var(--text);
+      }
+      .app { min-height: 100vh; display: grid; grid-template-columns: 340px minmax(0, 1fr); }
+      aside {
+        border-right: 1px solid var(--line);
+        background: rgba(255,255,255,.82);
+        padding: 24px;
+        display: flex;
+        flex-direction: column;
+        gap: 18px;
+      }
+      .brand-row { display: flex; align-items: center; gap: 12px; }
+      .mark { width: 42px; height: 42px; display: grid; place-items: center; border-radius: 16px; background: var(--accent-dark); color: white; font-weight: 900; box-shadow: 0 14px 30px rgba(4,120,87,.22); }
+      .brand { font-weight: 820; letter-spacing: -0.045em; font-size: 22px; }
+      .muted { color: var(--muted); font-size: 13px; line-height: 1.6; }
+      nav { display: grid; gap: 8px; margin-top: 8px; }
+      nav a { color: var(--text); text-decoration: none; padding: 11px 12px; border-radius: 14px; font-weight: 720; font-size: 14px; border: 1px solid transparent; }
+      nav a.active { background: var(--accent-soft); color: var(--accent-dark); border-color: #b7ebcd; }
+      nav a.ticket { color: #1d4ed8; }
+      .mode-card { margin-top: 8px; border: 1px solid var(--line); border-radius: 20px; background: var(--paper); padding: 16px; box-shadow: 0 1px 0 rgba(16, 35, 26, .03); }
+      .mode-card h2, .sources h2 { margin: 0 0 10px; font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+      .mode-item { display: flex; gap: 10px; padding: 9px 0; border-top: 1px solid var(--line); }
+      .mode-item:first-of-type { border-top: 0; }
+      .mode-dot { width: 9px; height: 9px; margin-top: 7px; border-radius: 50%; background: var(--accent); flex: 0 0 auto; }
+      .mode-item strong { display: block; font-size: 13px; }
+      .mode-item span { display: block; margin-top: 3px; color: var(--muted); font-size: 12px; line-height: 1.45; }
+      .sources { margin-top: auto; border: 1px solid var(--line); border-radius: 20px; padding: 16px; background: rgba(255,255,255,.82); }
+      .source { padding: 10px 0; border-top: 1px solid var(--line); }
+      .source:first-of-type { border-top: 0; }
+      .source strong { display: block; font-size: 12px; }
+      .source span { display: block; margin-top: 4px; color: var(--muted); font-size: 11px; word-break: break-word; }
+      main { min-width: 0; display: flex; flex-direction: column; height: 100vh; }
+      header {
+        min-height: 76px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 18px;
+        padding: 18px 30px;
+        border-bottom: 1px solid var(--line);
+        background: rgba(255,255,255,.78);
+      }
+      header h1 { margin: 0; font-size: 17px; letter-spacing: -0.025em; }
+      .status { color: var(--muted); font-size: 13px; }
+      .badge { display: inline-flex; align-items: center; gap: 8px; border-radius: 999px; padding: 7px 11px; background: var(--accent-soft); color: var(--accent-dark); font-size: 12px; font-weight: 800; }
+      .thread { flex: 1; overflow: auto; padding: 36px 26px 142px; }
+      .inner { width: min(920px, 100%); margin: 0 auto; }
+      .empty { min-height: calc(100vh - 300px); display: grid; place-items: center; text-align: center; }
+      .empty-card { width: min(760px, 100%); border: 1px solid var(--line); border-radius: 34px; background: rgba(255,255,255,.84); padding: clamp(28px, 5vw, 56px); box-shadow: var(--shadow); }
+      .empty h2 { margin: 0; font-size: clamp(32px, 6vw, 58px); line-height: .98; letter-spacing: -0.075em; }
+      .empty p { margin: 18px auto 0; max-width: 580px; color: var(--muted); line-height: 1.75; }
+      .suggestions { margin-top: 28px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+      .suggestions button { min-height: 74px; text-align: left; border: 1px solid var(--line); background: var(--paper); border-radius: 18px; padding: 13px; cursor: pointer; color: var(--text); font-weight: 720; line-height: 1.35; }
+      .suggestions button:hover { border-color: #9ee6bd; background: #f4fff8; }
+      .msg { display: flex; gap: 14px; margin: 0 0 26px; }
+      .avatar { width: 36px; height: 36px; border-radius: 15px; display: grid; place-items: center; flex: 0 0 auto; background: var(--accent-dark); color: white; font-size: 12px; font-weight: 850; }
+      .msg.user { justify-content: flex-end; }
+      .msg.user .avatar { background: #d1fae5; color: var(--accent-dark); }
+      .bubble { max-width: 790px; white-space: pre-wrap; line-height: 1.8; font-size: 15px; }
+      .msg.assistant .bubble { border-left: 3px solid var(--accent); padding-left: 16px; }
+      .msg.user .bubble { background: white; border: 1px solid var(--line); border-radius: 20px; padding: 12px 15px; box-shadow: 0 8px 24px rgba(6,78,59,.06); }
+      .composer { position: fixed; left: 340px; right: 0; bottom: 0; padding: 26px 26px 24px; background: linear-gradient(to top, var(--bg) 72%, rgba(244,251,247,0)); }
+      form { width: min(920px, 100%); margin: 0 auto; display: flex; align-items: flex-end; gap: 10px; border: 1px solid #bde8cf; border-radius: 28px; background: var(--paper); padding: 10px; box-shadow: var(--shadow); }
+      textarea { flex: 1; min-height: 52px; max-height: 190px; resize: none; border: 0; outline: 0; font: inherit; line-height: 1.58; padding: 13px 12px; background: transparent; color: var(--text); }
+      form button { width: 48px; height: 48px; border: 0; border-radius: 18px; background: var(--accent); color: white; cursor: pointer; font-weight: 900; }
+      form button:disabled { opacity: .35; cursor: not-allowed; }
+      .composer-note { width: min(920px, 100%); margin: 10px auto 0; color: var(--muted); font-size: 12px; text-align: center; }
+      @media (max-width: 900px) {
+        .app { grid-template-columns: 1fr; }
+        aside { display: none; }
+        .composer { left: 0; }
+        header { padding: 16px 18px; align-items: flex-start; flex-direction: column; }
+        .thread { padding-inline: 16px; }
+        .suggestions { grid-template-columns: 1fr; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app">
+      <aside>
+        <div>
+          <div class="brand-row">
+            <div class="mark">KB</div>
+            <div>
+              <div class="brand">Knowledge Chat</div>
+              <p class="muted" style="margin:4px 0 0">ถามเอกสารในคลังความรู้เท่านั้น ไม่สร้าง ticket และไม่บันทึก Google Sheet</p>
+            </div>
+          </div>
+        </div>
+        <nav>
+          <a class="active" href="/knowledge-chat">ถามคลังความรู้</a>
+          <a class="ticket" href="/">แจ้งปัญหา IT / สร้าง Ticket</a>
+          <a href="/admin">จัดการเอกสาร</a>
+        </nav>
+        <div class="mode-card">
+          <h2>หน้านี้ใช้ทำอะไร</h2>
+          <div class="mode-item"><div class="mode-dot"></div><div><strong>ถามจากเอกสาร</strong><span>AI จะค้น knowledge library แล้วตอบแบบละเอียด</span></div></div>
+          <div class="mode-item"><div class="mode-dot"></div><div><strong>คุยต่อเนื่องได้</strong><span>เหมาะกับสรุป SOP, policy, vendor note หรือคู่มือ</span></div></div>
+          <div class="mode-item"><div class="mode-dot"></div><div><strong>ไม่ใช่ Ticket</strong><span>ถ้าต้องการส่งเรื่องให้ IT ให้ไปหน้าแจ้งปัญหา IT</span></div></div>
+        </div>
+        <div class="sources">
+          <h2>Sources used</h2>
+          <div id="sources"><p class="muted">ยังไม่มีเอกสารอ้างอิง</p></div>
+        </div>
+      </aside>
+      <main>
+        <header>
+          <div>
+            <h1>Document Knowledge Assistant</h1>
+            <div class="status">ถาม SOP, policy, คู่มือ หรือเอกสารที่อัปโหลดไว้ใน Document Library</div>
+          </div>
+          <div id="status" class="badge">พร้อมค้นเอกสาร</div>
+        </header>
+        <div id="thread" class="thread">
+          <div class="inner">
+            <div id="empty" class="empty">
+              <div class="empty-card">
+                <h2>ถามเหมือนคุยกับผู้ช่วยเอกสาร</h2>
+                <p>หน้านี้ตอบจากคลังความรู้ ไม่สร้าง Ticket ไม่ส่ง Google Sheet และจะแสดงเอกสารที่ใช้อ้างอิงด้านซ้าย</p>
+                <div class="suggestions">
+                  <button type="button">สรุปเอกสารทั้งหมดที่มีตอนนี้</button>
+                  <button type="button">หา SOP ที่เกี่ยวกับ network ให้หน่อย</button>
+                  <button type="button">ถ้าเจอปัญหา printer ต้องตรวจอะไรบ้าง</button>
+                </div>
+              </div>
+            </div>
+            <div id="messages"></div>
+          </div>
+        </div>
+        <div class="composer">
+          <form id="form">
+            <textarea id="input" rows="1" placeholder="ถามจากเอกสาร เช่น SOP นี้บอกให้ทำอะไรบ้าง..."></textarea>
+            <button id="send" type="submit">↑</button>
+          </form>
+          <div class="composer-note">ถ้าต้องการแจ้งปัญหาและบันทึกเป็น ticket ให้ไปหน้า “แจ้งปัญหา IT”</div>
+        </div>
+      </main>
+    </div>
+    <script>
+      const messagesEl = document.querySelector('#messages');
+      const emptyEl = document.querySelector('#empty');
+      const input = document.querySelector('#input');
+      const form = document.querySelector('#form');
+      const send = document.querySelector('#send');
+      const statusEl = document.querySelector('#status');
+      const sourcesEl = document.querySelector('#sources');
+      const messages = [];
+
+      function escapeHtml(text) {
+        return String(text || '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[char]));
+      }
+
+      function render() {
+        emptyEl.style.display = messages.length ? 'none' : 'grid';
+        messagesEl.innerHTML = messages.map((message) => `
+          <div class="msg ${message.role}">
+            ${message.role === 'assistant' ? '<div class="avatar">AI</div>' : ''}
+            <div class="bubble">${escapeHtml(message.content)}</div>
+            ${message.role === 'user' ? '<div class="avatar">YOU</div>' : ''}
+          </div>
+        `).join('');
+        document.querySelector('#thread').scrollTop = document.querySelector('#thread').scrollHeight;
+      }
+
+      function renderSources(items = []) {
+        sourcesEl.innerHTML = items.length
+          ? items.map((item) => `<div class="source"><strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(item.path)}</span></div>`).join('')
+          : '<p class="muted">ไม่พบเอกสารที่ตรงมากพอ</p>';
+      }
+
+      async function sendMessage(text) {
+        const content = text.trim();
+        if (!content) return;
+        messages.push({ role: 'user', content });
+        input.value = '';
+        input.style.height = 'auto';
+        render();
+        send.disabled = true;
+        statusEl.textContent = 'กำลังค้นเอกสาร...';
+        try {
+          const res = await fetch('/api/knowledge-chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ messages })
+          });
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || 'request failed');
+          messages.push({ role: 'assistant', content: data.answer });
+          renderSources(data.ragContext?.items || []);
+          statusEl.textContent = data.mode === 'local-gemma' ? 'ตอบจาก Gemma + RAG' : 'ตอบแบบ fallback';
+        } catch (error) {
+          messages.push({ role: 'assistant', content: `ขออภัยครับ ระบบตอบเอกสารยังไม่พร้อม: ${error.message}` });
+          statusEl.textContent = 'มีข้อผิดพลาด';
+        } finally {
+          send.disabled = false;
+          render();
+          input.focus();
+        }
+      }
+
+      form.addEventListener('submit', (event) => {
+        event.preventDefault();
+        sendMessage(input.value);
+      });
+
+      input.addEventListener('input', () => {
+        input.style.height = 'auto';
+        input.style.height = `${input.scrollHeight}px`;
+      });
+
+      input.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' && !event.shiftKey) {
+          event.preventDefault();
+          form.requestSubmit();
+        }
+      });
+
+      document.querySelectorAll('.suggestions button').forEach((button) => {
+        button.addEventListener('click', () => sendMessage(button.textContent));
+      });
+    </script>
+  </body>
+</html>

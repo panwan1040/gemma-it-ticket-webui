@@ -3,7 +3,7 @@ import express from 'express';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 
 const app = express();
@@ -21,6 +21,7 @@ const typhoonBaseUrl = process.env.TYPHOON_OCR_BASE_URL || 'http://127.0.0.1:114
 const typhoonModel = process.env.TYPHOON_OCR_MODEL || 'scb10x/typhoon-ocr1.5-3b';
 const typhoonMaxPdfPages = Math.max(1, Math.min(Number(process.env.TYPHOON_OCR_MAX_PDF_PAGES || 3), 10));
 const typhoonMaxUploadMb = Math.max(1, Math.min(Number(process.env.TYPHOON_OCR_MAX_UPLOAD_MB || 24), 80));
+const ollamaAppBin = '/Applications/Ollama.app/Contents/Resources/ollama';
 
 
 app.use(express.json({ limit: `${Math.max(32, typhoonMaxUploadMb + 8)}mb` }));
@@ -226,6 +227,67 @@ async function parseWithTyphoonOcr(file) {
   } finally {
     await fs.rm(temp.dir, { recursive: true, force: true }).catch(() => {});
   }
+}
+
+async function getTyphoonOcrStatus() {
+  let available = false;
+  let reachable = false;
+  let detail = 'Ollama/Typhoon OCR ยังไม่เปิด';
+  try {
+    const response = await fetch(`${typhoonBaseUrl}/api/tags`);
+    const data = await response.json();
+    const models = Array.isArray(data.models) ? data.models : [];
+    reachable = response.ok;
+    available = reachable && models.some((model) => String(model.name || '').startsWith(typhoonModel));
+    detail = available ? 'Typhoon OCR พร้อมใช้งาน' : `Ollama เปิดอยู่ แต่ยังไม่มีโมเดล ${typhoonModel}`;
+  } catch {}
+
+  return {
+    available,
+    reachable,
+    baseUrl: typhoonBaseUrl,
+    model: typhoonModel,
+    maxPdfPages: typhoonMaxPdfPages,
+    maxUploadMb: typhoonMaxUploadMb,
+    detail,
+    installCommand: 'scripts/install_typhoon_ocr.sh'
+  };
+}
+
+async function startTyphoonOcrWorker() {
+  const before = await getTyphoonOcrStatus();
+  if (before.available) return { started: false, status: before };
+
+  let bin = process.env.OLLAMA_BIN || '';
+  if (!bin && process.platform === 'darwin') {
+    bin = await fs.access(ollamaAppBin).then(() => ollamaAppBin).catch(() => '');
+  }
+  if (!bin) {
+    bin = await execFileAsync('/bin/zsh', ['-lc', 'command -v ollama'], { timeout: 5000 })
+      .then(({ stdout }) => stdout.trim())
+      .catch(() => '');
+  }
+  if (!bin) {
+    throw new Error('ยังไม่พบ Ollama ในเครื่อง กรุณารัน scripts/install_typhoon_ocr.sh ก่อนครับ');
+  }
+
+  const child = spawn(bin, ['serve'], {
+    detached: true,
+    stdio: 'ignore',
+    env: {
+      ...process.env,
+      OLLAMA_HOST: typhoonBaseUrl.replace(/^https?:\/\//, '')
+    }
+  });
+  child.unref();
+
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    const status = await getTyphoonOcrStatus();
+    if (status.reachable) return { started: true, status };
+  }
+
+  return { started: true, status: await getTyphoonOcrStatus() };
 }
 
 function safeKnowledgePath(relativePath) {
@@ -443,6 +505,10 @@ app.get('/admin', requireAdmin, (_req, res) => {
   res.sendFile(path.join(process.cwd(), 'public', 'admin.html'));
 });
 
+app.get('/knowledge-chat', (_req, res) => {
+  res.sendFile(path.join(process.cwd(), 'public', 'knowledge-chat.html'));
+});
+
 app.get('/api/admin/knowledge', requireAdmin, async (_req, res) => {
   const files = await walkMarkdown(knowledgeDir);
   const notes = [];
@@ -507,30 +573,64 @@ app.post('/api/admin/knowledge/upload', requireAdmin, async (req, res) => {
 });
 
 app.get('/api/admin/ocr/status', requireAdmin, async (_req, res) => {
-  let available = false;
-  let detail = 'Ollama is not reachable';
+  res.json({ ok: true, ...await getTyphoonOcrStatus() });
+});
+
+app.get('/api/admin/setup/status', requireAdmin, async (_req, res) => {
+  const knowledge = await loadRagIndex();
+  const ocr = await getTyphoonOcrStatus();
+  let modelReady = false;
   try {
-    const response = await fetch(`${typhoonBaseUrl}/api/tags`);
-    const data = await response.json();
-    const models = Array.isArray(data.models) ? data.models : [];
-    available = response.ok && models.some((model) => String(model.name || '').startsWith(typhoonModel));
-    detail = available ? 'Typhoon OCR model is available' : `Ollama is reachable, but ${typhoonModel} is not pulled yet`;
+    const response = await fetch(`${llmBaseUrl}/models`);
+    modelReady = response.ok;
   } catch {}
 
   res.json({
     ok: true,
-    available,
-    baseUrl: typhoonBaseUrl,
-    model: typhoonModel,
-    maxPdfPages: typhoonMaxPdfPages,
-    maxUploadMb: typhoonMaxUploadMb,
-    detail,
-    installCommand: 'scripts/install_typhoon_ocr.sh'
+    checks: [
+      {
+        id: 'model',
+        label: 'Local AI model',
+        ready: modelReady,
+        detail: modelReady ? `พร้อมตอบผ่าน ${llmModel}` : 'ยังไม่พบ local model server ถามเอกสารจะใช้ fallback เท่านั้น'
+      },
+      {
+        id: 'knowledge',
+        label: 'Knowledge library',
+        ready: Boolean(knowledge.docs?.length),
+        detail: knowledge.docs?.length ? `มีเอกสาร ${knowledge.docs.length} รายการในคลัง` : 'ยังไม่มีเอกสารในคลัง เริ่มจากเพิ่มเอกสารด้านล่าง'
+      },
+      {
+        id: 'sheet',
+        label: 'Google Sheet logging',
+        ready: Boolean(sheetWebhookUrl),
+        detail: sheetWebhookUrl ? 'ตั้งค่า Google Sheet webhook แล้ว' : 'ยังไม่ตั้งค่า Google Sheet webhook'
+      },
+      {
+        id: 'document_reader',
+        label: 'PDF/Image reader',
+        ready: ocr.available,
+        detail: ocr.available ? 'พร้อมแปลง PDF/รูปเป็นข้อความ' : 'ระบบจะพยายามเปิดให้อัตโนมัติเมื่อเพิ่ม PDF/รูป'
+      }
+    ]
   });
+});
+
+app.post('/api/admin/ocr/start', requireAdmin, async (_req, res) => {
+  try {
+    const result = await startTyphoonOcrWorker();
+    res.json({ ok: true, ...result });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 app.post('/api/admin/knowledge/parse-ocr', requireAdmin, async (req, res) => {
   try {
+    const status = await getTyphoonOcrStatus();
+    if (!status.available) {
+      await startTyphoonOcrWorker();
+    }
     const file = req.body?.file;
     if (!file || typeof file !== 'object') {
       res.status(400).json({ error: 'file is required' });
@@ -546,7 +646,9 @@ app.post('/api/admin/knowledge/parse-ocr', requireAdmin, async (req, res) => {
 app.delete('/api/admin/knowledge/file', requireAdmin, async (req, res) => {
   try {
     const { clean, full } = safeKnowledgePath(req.body?.path);
-    await fs.unlink(full);
+    await fs.unlink(full).catch((error) => {
+      if (error.code !== 'ENOENT') throw error;
+    });
     const index = await rebuildKnowledgeIndex();
     res.json({ ok: true, path: clean, index });
   } catch (error) {
@@ -640,6 +742,71 @@ app.post('/api/chat', async (req, res) => {
     result = { ...fallbackTriage(latestUser, cleanMessages), ragContext: await searchKnowledge(latestUser) };
   }
   res.json({ mode, ...result });
+});
+
+app.post('/api/knowledge-chat', async (req, res) => {
+  const messages = Array.isArray(req.body?.messages) ? req.body.messages : [];
+  const cleanMessages = messages
+    .filter((item) => item && ['user', 'assistant'].includes(item.role) && String(item.content || '').trim())
+    .slice(-20)
+    .map((item) => ({ role: item.role, content: String(item.content).trim() }));
+
+  const latestUser = [...cleanMessages].reverse().find((item) => item.role === 'user')?.content || '';
+  if (!latestUser) {
+    res.status(400).json({ error: 'at least one user message is required' });
+    return;
+  }
+
+  const rag = await searchKnowledge(cleanMessages.map((item) => `${item.role}: ${item.content}`).join('\n'), 6);
+  if (!rag.count) {
+    res.json({
+      mode: 'empty-knowledge',
+      answer: 'ตอนนี้ยังไม่มีเอกสารในคลังความรู้ครับ ไปที่ /admin แล้วอัปโหลดหรือสร้าง note ก่อน จากนั้นกด Save + Reindex แล้วกลับมาถามใหม่ได้ครับ',
+      ragContext: { count: 0, items: [] }
+    });
+    return;
+  }
+
+  try {
+    const conversation = cleanMessages.map((item) => `${item.role === 'user' ? 'User' : 'Assistant'}: ${item.content}`).join('\n');
+    const response = await fetch(`${llmBaseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: llmModel,
+        temperature: 0.2,
+        max_tokens: 2200,
+        messages: [
+          {
+            role: 'system',
+            content: `You are a helpful Thai knowledge-base chatbot for an internal company knowledge vault.
+Answer in Thai unless the user asks for English. You can answer longer and more conversationally than the IT ticket intake agent.
+Use the provided Relevant Knowledge as your primary source. If the answer is not in the knowledge, say so clearly and suggest what document should be added.
+Do not invent policy, asset names, contacts, or exact procedures that are not in the knowledge.
+When useful, structure the answer with short headings and bullet points.`
+          },
+          {
+            role: 'user',
+            content: `Relevant Knowledge:\n${rag.context || '(no direct matches)'}\n\nConversation:\n${conversation}\n\nตอบคำถามล่าสุดโดยอ้างอิงคลังความรู้ด้านบน`
+          }
+        ]
+      })
+    });
+
+    if (!response.ok) throw new Error(`LLM HTTP ${response.status}`);
+    const data = await response.json();
+    const answer = data.choices?.[0]?.message?.content?.trim();
+    if (!answer) throw new Error('empty model response');
+    res.json({ mode: 'local-gemma', answer, ragContext: { count: rag.count, items: rag.items } });
+  } catch {
+    res.json({
+      mode: 'fallback-rag',
+      answer: rag.items.length
+        ? `ผมเจอเอกสารที่น่าจะเกี่ยวข้องครับ แต่ตอนนี้โมเดล local ยังไม่พร้อมตอบแบบละเอียด:\n\n${rag.items.map((item, index) => `${index + 1}. ${item.title}\n${item.snippet}`).join('\n\n')}`
+        : 'ยังไม่เจอเอกสารที่เกี่ยวข้องครับ ลองเพิ่ม keyword หรืออัปโหลดเอกสารใน /admin ก่อนครับ',
+      ragContext: { count: rag.count, items: rag.items }
+    });
+  }
 });
 
 app.post('/api/tickets', async (req, res) => {

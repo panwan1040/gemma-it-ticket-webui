@@ -3,87 +3,174 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Knowledge Admin</title>
+    <title>Document Library Admin</title>
     <style>
       * { box-sizing: border-box; }
-      body { margin: 0; min-height: 100vh; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f8fafc; color: #18181b; }
-      header { height: 64px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 0 24px; border-bottom: 1px solid #e4e4e7; background: white; }
-      h1 { margin: 0; font-size: 16px; }
-      main { display: grid; grid-template-columns: 360px 1fr; height: calc(100vh - 64px); }
-      aside { border-right: 1px solid #e4e4e7; background: white; overflow: auto; padding: 16px; }
-      section { min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
-      .toolbar { display: flex; gap: 8px; padding: 16px; border-bottom: 1px solid #e4e4e7; background: #fff; align-items: center; }
-      button { border: 1px solid #e4e4e7; background: white; color: #27272a; border-radius: 10px; padding: 9px 12px; font-weight: 600; cursor: pointer; }
-      button.primary { border-color: #18181b; background: #18181b; color: white; }
-      button.danger { color: #b91c1c; }
-      input { width: 100%; border: 1px solid #e4e4e7; border-radius: 10px; padding: 10px 12px; outline: none; }
-      textarea { flex: 1; width: 100%; resize: none; border: 0; outline: none; padding: 18px; font: 14px/1.65 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
-      .dropzone { margin-bottom: 14px; border: 1.5px dashed #c7d2fe; background: #eef2ff; border-radius: 16px; padding: 18px; text-align: center; color: #4338ca; }
-      .dropzone.dragover { border-color: #4f46e5; background: #e0e7ff; }
-      .dropzone strong { display: block; font-size: 14px; }
-      .dropzone span { display: block; margin-top: 6px; font-size: 12px; color: #6366f1; }
-      .dropzone input { display: none; }
-      .ocr-card { margin-bottom: 14px; border: 1px solid #e4e4e7; border-radius: 16px; background: white; padding: 14px; }
-      .ocr-card strong { display: block; font-size: 13px; }
-      .ocr-card p { margin: 8px 0 0; color: #71717a; font-size: 12px; line-height: 1.5; }
-      .pill { display: inline-flex; align-items: center; gap: 6px; margin-top: 10px; border-radius: 999px; padding: 5px 9px; background: #f4f4f5; color: #52525b; font-size: 12px; }
-      .pill.ok { background: #ecfdf5; color: #047857; }
-      .pill.warn { background: #fffbeb; color: #b45309; }
-      .note { width: 100%; text-align: left; margin-top: 8px; border-radius: 12px; padding: 12px; border: 1px solid #e4e4e7; background: #fafafa; }
-      .note.active { border-color: #4f46e5; background: #eef2ff; }
-      .note strong { display: block; font-size: 13px; }
-      .note span { display: block; margin-top: 4px; color: #71717a; font-size: 12px; word-break: break-all; }
-      .status { color: #71717a; font-size: 13px; }
-      .hint { margin: 8px 0 14px; color: #71717a; font-size: 12px; line-height: 1.5; }
-      @media (max-width: 860px) { main { grid-template-columns: 1fr; } aside { height: 360px; border-right: 0; border-bottom: 1px solid #e4e4e7; } }
+      :root {
+        --bg: #f6f7f9;
+        --panel: #ffffff;
+        --line: #e4e7ec;
+        --text: #101828;
+        --muted: #667085;
+        --soft: #f2f4f7;
+        --accent: #111827;
+        --green: #067647;
+        --green-bg: #ecfdf3;
+        --amber: #b54708;
+        --amber-bg: #fffaeb;
+        --red: #b42318;
+        --shadow: 0 18px 60px rgba(16, 24, 40, .08);
+      }
+      body { margin: 0; min-height: 100vh; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); }
+      header { min-height: 76px; display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 18px 26px; border-bottom: 1px solid var(--line); background: rgba(255,255,255,.92); }
+      h1, h2, h3, p { margin-top: 0; }
+      h1 { margin-bottom: 4px; font-size: 20px; letter-spacing: -0.04em; }
+      .sub { color: var(--muted); font-size: 13px; line-height: 1.5; }
+      .toplinks { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+      .toplinks a, button { border: 1px solid var(--line); background: white; color: var(--text); border-radius: 12px; padding: 9px 12px; font-weight: 750; font-size: 13px; text-decoration: none; cursor: pointer; }
+      button.primary, .toplinks a.primary { background: var(--accent); border-color: var(--accent); color: white; }
+      button.danger { color: var(--red); }
+      button:disabled { opacity: .45; cursor: not-allowed; }
+      .layout { display: grid; grid-template-columns: 320px 390px 1fr; height: calc(100vh - 76px); }
+      .rail, .library, .workspace { min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+      .rail, .library { background: var(--panel); border-right: 1px solid var(--line); }
+      .panel { margin: 16px; border: 1px solid var(--line); border-radius: 20px; background: white; box-shadow: 0 1px 0 rgba(16,24,40,.02); }
+      .panel.pad { padding: 16px; }
+      .title { margin: 0 0 10px; font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); font-weight: 850; }
+      .check { display: flex; gap: 10px; padding: 10px 0; border-top: 1px solid var(--line); }
+      .check:first-of-type { border-top: 0; }
+      .dot { width: 10px; height: 10px; margin-top: 5px; border-radius: 50%; background: var(--amber); flex: 0 0 auto; }
+      .dot.ready { background: var(--green); }
+      .check strong { display: block; font-size: 13px; }
+      .check span { display: block; margin-top: 3px; color: var(--muted); font-size: 12px; line-height: 1.45; }
+      .drop { display: grid; gap: 12px; place-items: center; text-align: center; padding: 26px 18px; border: 1.5px dashed #cbd5e1; border-radius: 22px; background: #f8fafc; cursor: pointer; }
+      .drop.dragover { border-color: var(--accent); background: #f1f5f9; }
+      .drop input { display: none; }
+      .drop-icon { width: 46px; height: 46px; border-radius: 16px; display: grid; place-items: center; background: var(--accent); color: white; font-weight: 900; }
+      .drop strong { font-size: 16px; letter-spacing: -0.02em; }
+      .drop span { color: var(--muted); font-size: 13px; line-height: 1.55; max-width: 260px; }
+      .status-card { margin-top: 14px; padding: 12px; border-radius: 16px; background: var(--soft); color: var(--muted); font-size: 12px; line-height: 1.5; }
+      .pill { display: inline-flex; margin-top: 8px; border-radius: 999px; padding: 5px 9px; background: var(--amber-bg); color: var(--amber); font-size: 12px; font-weight: 800; }
+      .pill.ok { background: var(--green-bg); color: var(--green); }
+      .folder-list, .file-list { overflow: auto; padding: 0 12px 16px; }
+      .section-head { padding: 16px 16px 8px; color: var(--muted); font-size: 12px; font-weight: 850; letter-spacing: .08em; text-transform: uppercase; }
+      .folder, .file { width: 100%; border: 1px solid transparent; background: transparent; color: var(--text); text-align: left; border-radius: 14px; padding: 11px 12px; cursor: pointer; font: inherit; }
+      .folder { display: flex; justify-content: space-between; gap: 8px; font-weight: 800; }
+      .folder.active, .file.active { background: var(--soft); border-color: var(--line); }
+      .count { color: var(--muted); font-size: 12px; font-weight: 750; }
+      .file strong { display: block; font-size: 13px; line-height: 1.35; }
+      .file span { display: block; margin-top: 4px; color: var(--muted); font-size: 11px; word-break: break-word; }
+      .create { display: grid; gap: 8px; padding: 14px 16px; border-bottom: 1px solid var(--line); }
+      input { width: 100%; border: 1px solid var(--line); border-radius: 13px; padding: 10px 12px; outline: none; background: white; font: inherit; }
+      .create-row { display: flex; gap: 8px; }
+      .empty { padding: 22px 16px; color: var(--muted); font-size: 13px; line-height: 1.6; }
+      .workspace-head { display: flex; gap: 10px; align-items: center; padding: 14px 16px; border-bottom: 1px solid var(--line); background: white; }
+      .path { flex: 1; }
+      .notice { padding: 12px 16px; border-bottom: 1px solid var(--line); background: #fffaf0; color: #92400e; font-size: 13px; line-height: 1.55; display: none; }
+      .notice.show { display: block; }
+      textarea { flex: 1; width: 100%; min-height: 0; resize: none; border: 0; outline: none; padding: 22px; background: #fcfcfd; font: 14px/1.72 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+      .save-status { color: var(--muted); font-size: 12px; white-space: nowrap; }
+      .toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); max-width: min(560px, calc(100vw - 32px)); padding: 12px 15px; border: 1px solid var(--line); border-radius: 14px; background: white; box-shadow: var(--shadow); color: var(--text); font-size: 13px; display: none; }
+      .toast.show { display: block; }
+      @media (max-width: 1120px) { .layout { grid-template-columns: 300px 1fr; height: auto; min-height: calc(100vh - 76px); } .workspace { grid-column: 1 / -1; min-height: 620px; border-top: 1px solid var(--line); } }
+      @media (max-width: 760px) { header { align-items: flex-start; flex-direction: column; padding: 16px; } .layout { grid-template-columns: 1fr; } .rail, .library { border-right: 0; border-bottom: 1px solid var(--line); } .workspace { grid-column: auto; } .workspace-head { flex-wrap: wrap; } .path { flex-basis: 100%; } }
     </style>
   </head>
   <body>
     <header>
       <div>
-        <h1>Knowledge Admin</h1>
-        <div class="status">ลากไฟล์มาวางเพื่อเพิ่ม knowledge ให้ RAG</div>
+        <h1>Document Library</h1>
+        <div class="sub">เพิ่มเอกสารบริษัทให้ AI ใช้ตอบคำถาม ระบบจะจัดการแปลงไฟล์และอัปเดตคลังความรู้ให้อัตโนมัติ</div>
       </div>
-      <button id="reindexBtn">Reindex</button>
+      <div class="toplinks">
+        <a class="primary" href="/knowledge-chat">ถาม AI จากเอกสาร</a>
+        <a href="/">แจ้งปัญหา IT</a>
+        <button id="refreshBtn">Refresh</button>
+      </div>
     </header>
-    <main>
-      <aside>
-        <label id="dropzone" class="dropzone">
-          <input id="fileInput" type="file" multiple accept=".md,.markdown,.txt,.pdf,.png,.jpg,.jpeg,.webp" />
-          <strong>ลากไฟล์มาวาง หรือคลิกเพื่อเลือกไฟล์</strong>
-          <span>.md/.txt บันทึกได้ทันที ส่วน .pdf/.png/.jpg/.webp จะเข้า Typhoon OCR แล้วเปิดเป็น draft ให้ตรวจก่อน Save</span>
-        </label>
-        <div class="ocr-card">
-          <strong>Typhoon OCR worker</strong>
-          <p id="ocrDetail">กำลังตรวจสถานะ OCR...</p>
-          <span id="ocrPill" class="pill warn">checking</span>
+
+    <main class="layout">
+      <aside class="rail">
+        <div class="panel pad">
+          <div class="title">System readiness</div>
+          <div id="checks"><div class="empty">กำลังตรวจระบบ...</div></div>
         </div>
-        <input id="newPath" placeholder="SOP/wifi-troubleshooting.md" />
-        <button id="newBtn" class="primary" style="width:100%;margin-top:8px;">Create / Open</button>
-        <p class="hint">Tip: วางไฟล์ SOP, asset list, vendor contact, incident note แล้วระบบจะ save ลง knowledge/Uploads และ reindex อัตโนมัติ</p>
-        <div id="notes"></div>
+
+        <div class="panel pad">
+          <label id="dropzone" class="drop">
+            <input id="fileInput" type="file" multiple accept=".md,.markdown,.txt,.pdf,.png,.jpg,.jpeg,.webp" />
+            <div class="drop-icon">+</div>
+            <strong>เพิ่มเอกสาร</strong>
+            <span>ลากไฟล์มาวาง หรือคลิกเพื่อเลือกไฟล์ รองรับ Markdown, Text, PDF และรูปภาพ</span>
+          </label>
+          <div class="status-card">
+            <strong>ถ้าเป็น PDF/รูป:</strong> ระบบจะเปิดตัวอ่านเอกสารให้เอง แปลงเป็นข้อความ แล้วเปิดให้ตรวจก่อนบันทึกเข้าคลัง
+            <div id="readerPill" class="pill">checking reader</div>
+          </div>
+        </div>
       </aside>
-      <section>
-        <div class="toolbar">
-          <button id="saveBtn" class="primary">Save + Reindex</button>
-          <button id="deleteBtn" class="danger">Delete</button>
-          <span id="status" class="status"></span>
+
+      <section class="library">
+        <div class="create">
+          <div class="title">Create note</div>
+          <input id="newPath" placeholder="เช่น SOP/network.md หรือ HR/leave-policy.md" />
+          <div class="create-row">
+            <button id="newBtn" class="primary">สร้างเอกสารเปล่า</button>
+            <button id="reindexBtn">อัปเดตคลัง</button>
+          </div>
         </div>
-        <textarea id="editor" placeholder="# Title\n\nเขียน SOP, asset, vendor note หรือ incident note ได้ที่นี่..."></textarea>
+        <div class="section-head">Folders</div>
+        <div id="folders" class="folder-list"></div>
+        <div class="section-head" id="filesTitle">Files</div>
+        <div id="files" class="file-list"></div>
+      </section>
+
+      <section class="workspace">
+        <div id="notice" class="notice"></div>
+        <div class="workspace-head">
+          <input id="currentPathInput" class="path" placeholder="เลือกไฟล์ หรือสร้างไฟล์ใหม่ก่อน" />
+          <button id="saveBtn" class="primary">บันทึกเข้าคลังความรู้</button>
+          <button id="deleteBtn" class="danger">ลบ</button>
+          <span id="status" class="save-status"></span>
+        </div>
+        <textarea id="editor" placeholder="# ชื่อเอกสาร&#10;&#10;เพิ่ม SOP, policy, vendor note, asset list หรือข้อความจาก OCR draft ได้ที่นี่..."></textarea>
       </section>
     </main>
+
+    <div id="toast" class="toast"></div>
+
     <script>
-      const notesEl = document.querySelector('#notes');
+      const checksEl = document.querySelector('#checks');
+      const readerPill = document.querySelector('#readerPill');
+      const foldersEl = document.querySelector('#folders');
+      const filesEl = document.querySelector('#files');
+      const filesTitle = document.querySelector('#filesTitle');
       const editor = document.querySelector('#editor');
       const statusEl = document.querySelector('#status');
+      const noticeEl = document.querySelector('#notice');
+      const toastEl = document.querySelector('#toast');
       const newPath = document.querySelector('#newPath');
+      const currentPathInput = document.querySelector('#currentPathInput');
       const dropzone = document.querySelector('#dropzone');
       const fileInput = document.querySelector('#fileInput');
       let currentPath = '';
+      let selectedFolder = 'All';
       let notes = [];
-      let ocrStatus = null;
+      let readerReady = false;
+
+      function toast(text) {
+        toastEl.textContent = text;
+        toastEl.classList.add('show');
+        clearTimeout(window.toastTimer);
+        window.toastTimer = setTimeout(() => toastEl.classList.remove('show'), 4200);
+      }
 
       function setStatus(text) { statusEl.textContent = text; }
+
+      function showNotice(text) {
+        noticeEl.textContent = text;
+        noticeEl.classList.toggle('show', Boolean(text));
+      }
 
       async function api(url, options = {}) {
         const res = await fetch(url, { headers: { 'Content-Type': 'application/json' }, ...options });
@@ -92,30 +179,85 @@
         return data;
       }
 
-      function renderNotes() {
-        notesEl.innerHTML = '';
-        for (const note of notes) {
-          const btn = document.createElement('button');
-          btn.className = `note ${note.path === currentPath ? 'active' : ''}`;
-          btn.innerHTML = `<strong>${note.title}</strong><span>${note.path}</span>`;
-          btn.onclick = () => openNote(note.path);
-          notesEl.append(btn);
-        }
+      function escapeHtml(text) {
+        return String(text || '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[char]));
       }
+
+      function folderOf(path) {
+        const parts = String(path || '').split('/');
+        return parts.length > 1 ? parts.slice(0, -1).join('/') : 'Root';
+      }
+
+      function groupedFolders() {
+        const map = new Map([['All', notes.length]]);
+        for (const note of notes) {
+          const folder = folderOf(note.path);
+          map.set(folder, (map.get(folder) || 0) + 1);
+        }
+        return [...map.entries()].sort((a, b) => a[0] === 'All' ? -1 : b[0] === 'All' ? 1 : a[0].localeCompare(b[0]));
+      }
+
+      function renderFolders() {
+        foldersEl.innerHTML = groupedFolders().map(([folder, count]) => `
+          <button class="folder ${folder === selectedFolder ? 'active' : ''}" data-folder="${escapeHtml(folder)}">
+            <span>${folder === 'All' ? 'ทุกโฟลเดอร์' : 'Folder: ' + escapeHtml(folder)}</span><span class="count">${count}</span>
+          </button>
+        `).join('') || '<div class="empty">ยังไม่มี folder</div>';
+        foldersEl.querySelectorAll('button').forEach((button) => {
+          button.onclick = () => { selectedFolder = button.dataset.folder; renderAll(); };
+        });
+      }
+
+      function renderFiles() {
+        const visible = selectedFolder === 'All' ? notes : notes.filter((note) => folderOf(note.path) === selectedFolder);
+        filesTitle.textContent = selectedFolder === 'All' ? 'Files: ทุกโฟลเดอร์' : `Files: ${selectedFolder}`;
+        filesEl.innerHTML = visible.length ? visible.map((note) => `
+          <button class="file ${note.path === currentPath ? 'active' : ''}" data-path="${escapeHtml(note.path)}">
+            <strong>${escapeHtml(note.title)}</strong><span>${escapeHtml(note.path)}</span>
+          </button>
+        `).join('') : '<div class="empty">ยังไม่มีเอกสารในโฟลเดอร์นี้<br />เพิ่มเอกสารจากกล่องด้านซ้าย หรือสร้าง note ใหม่ได้เลย</div>';
+        filesEl.querySelectorAll('button').forEach((button) => { button.onclick = () => openNote(button.dataset.path); });
+      }
+
+      function renderAll() { renderFolders(); renderFiles(); }
 
       async function loadNotes() {
         const data = await api('/api/admin/knowledge');
         notes = data.notes;
-        renderNotes();
+        if (!groupedFolders().some(([folder]) => folder === selectedFolder)) selectedFolder = 'All';
+        renderAll();
       }
 
-      async function loadOcrStatus() {
-        const detail = document.querySelector('#ocrDetail');
-        const pill = document.querySelector('#ocrPill');
-        ocrStatus = await api('/api/admin/ocr/status');
-        detail.textContent = `${ocrStatus.detail}. Model: ${ocrStatus.model}. PDF สูงสุด ${ocrStatus.maxPdfPages} หน้า/ไฟล์.`;
-        pill.textContent = ocrStatus.available ? 'ready' : 'setup needed';
-        pill.className = `pill ${ocrStatus.available ? 'ok' : 'warn'}`;
+      async function loadSetup() {
+        const data = await api('/api/admin/setup/status');
+        checksEl.innerHTML = data.checks.map((check) => `
+          <div class="check">
+            <div class="dot ${check.ready ? 'ready' : ''}"></div>
+            <div><strong>${escapeHtml(check.label)}</strong><span>${escapeHtml(check.detail)}</span></div>
+          </div>
+        `).join('');
+      }
+
+      async function loadReaderStatus() {
+        const data = await api('/api/admin/ocr/status');
+        readerReady = Boolean(data.available);
+        readerPill.textContent = data.available ? 'พร้อมอ่าน PDF/รูป' : 'ยังไม่เปิด ระบบจะเปิดให้เอง';
+        readerPill.className = `pill ${data.available ? 'ok' : ''}`;
+      }
+
+      async function refreshAll() {
+        await Promise.all([loadNotes(), loadSetup(), loadReaderStatus()]);
+      }
+
+      async function openNote(path) {
+        currentPath = path;
+        currentPathInput.value = path;
+        newPath.value = path;
+        const data = await api(`/api/admin/knowledge/file?path=${encodeURIComponent(path)}`);
+        editor.value = data.content;
+        showNotice('');
+        renderAll();
+        setStatus(`เปิด ${path}`);
       }
 
       function readFileAsBase64(file) {
@@ -127,48 +269,52 @@
         });
       }
 
-      async function openNote(path) {
-        currentPath = path;
-        newPath.value = path;
-        const data = await api(`/api/admin/knowledge/file?path=${encodeURIComponent(path)}`);
-        editor.value = data.content;
-        renderNotes();
-        setStatus(`Opened ${path}`);
+      async function ensureReader() {
+        if (readerReady) return;
+        readerPill.textContent = 'กำลังเปิดตัวอ่านเอกสาร...';
+        toast('กำลังเปิดตัวอ่าน PDF/รูปให้อัตโนมัติ รอสักครู่ครับ');
+        const data = await api('/api/admin/ocr/start', { method: 'POST', body: '{}' });
+        readerReady = Boolean(data.status?.available);
+        await loadReaderStatus();
+        if (!readerReady) throw new Error(data.status?.detail || 'ตัวอ่านเอกสารยังไม่พร้อม กรุณาติดตั้งด้วย scripts/install_typhoon_ocr.sh');
       }
 
       async function uploadFiles(fileList) {
         const files = [...fileList];
         if (!files.length) return;
-        setStatus(`Reading ${files.length} file(s)...`);
-        const payload = [];
+        const textPayload = [];
         for (const file of files) {
           const ext = file.name.split('.').pop().toLowerCase();
           const canReadText = ['md', 'markdown', 'txt'].includes(ext) || file.type.startsWith('text/');
-          const canOcr = ['pdf', 'png', 'jpg', 'jpeg', 'webp'].includes(ext) || /^image\/(png|jpe?g|webp)$/i.test(file.type);
-          if (canOcr && !canReadText) {
-            setStatus(`Typhoon OCR parsing ${file.name}...`);
+          const canReadDocument = ['pdf', 'png', 'jpg', 'jpeg', 'webp'].includes(ext) || /^image\/(png|jpe?g|webp)$/i.test(file.type);
+
+          if (canReadDocument && !canReadText) {
+            await ensureReader();
+            setStatus(`กำลังแปลง ${file.name}...`);
+            showNotice('ระบบกำลังแปลง PDF/รูปเป็นข้อความ หลังแปลงเสร็จจะเปิดเป็น draft ให้ตรวจ ไม่บันทึกเข้าคลังจนกว่าจะกดปุ่มบันทึก');
             const parsed = await api('/api/admin/knowledge/parse-ocr', {
               method: 'POST',
               body: JSON.stringify({ file: { name: file.name, type: file.type, base64: await readFileAsBase64(file) } })
             });
             currentPath = parsed.path;
+            currentPathInput.value = parsed.path;
             newPath.value = parsed.path;
             editor.value = parsed.content;
-            setStatus(`OCR draft ready: ${parsed.path}. ตรวจข้อความแล้วกด Save + Reindex`);
-            renderNotes();
+            selectedFolder = folderOf(parsed.path);
+            showNotice('ตรวจข้อความจากเอกสารก่อนครับ ถ้าถูกต้องแล้วกด “บันทึกเข้าคลังความรู้” เพื่อให้ AI ใช้อ้างอิงได้');
+            setStatus('แปลงเอกสารเสร็จ รอตรวจและบันทึก');
+            renderAll();
           } else {
-            payload.push({
-              name: file.name,
-              type: file.type,
-              content: canReadText ? await file.text() : ''
-            });
+            textPayload.push({ name: file.name, type: file.type, content: canReadText ? await file.text() : '' });
           }
         }
-        if (!payload.length) return;
-        const data = await api('/api/admin/knowledge/upload', { method: 'POST', body: JSON.stringify({ files: payload }) });
-        setStatus(`Uploaded ${data.saved.length} file(s). Indexed ${data.index.count} notes.`);
-        await loadNotes();
-        if (data.saved[0]) await openNote(data.saved[0]);
+
+        if (textPayload.length) {
+          const data = await api('/api/admin/knowledge/upload', { method: 'POST', body: JSON.stringify({ files: textPayload }) });
+          toast(`เพิ่มเอกสารแล้ว ${data.saved.length} ไฟล์ และอัปเดตคลังความรู้เรียบร้อย`);
+          await refreshAll();
+          if (data.saved[0]) await openNote(data.saved[0]);
+        }
       }
 
       dropzone.addEventListener('dragover', (event) => { event.preventDefault(); dropzone.classList.add('dragover'); });
@@ -176,46 +322,72 @@
       dropzone.addEventListener('drop', async (event) => {
         event.preventDefault();
         dropzone.classList.remove('dragover');
-        try { await uploadFiles(event.dataTransfer.files); } catch (error) { setStatus(error.message); }
+        try { await uploadFiles(event.dataTransfer.files); } catch (error) { toast(error.message); setStatus(error.message); }
       });
       fileInput.addEventListener('change', async () => {
-        try { await uploadFiles(fileInput.files); fileInput.value = ''; } catch (error) { setStatus(error.message); }
+        try { await uploadFiles(fileInput.files); fileInput.value = ''; } catch (error) { toast(error.message); setStatus(error.message); }
       });
 
       document.querySelector('#newBtn').onclick = () => {
         const path = newPath.value.trim();
-        if (!path.endsWith('.md')) return setStatus('Path ต้องลงท้าย .md');
+        if (!path.endsWith('.md')) return toast('ชื่อไฟล์ต้องลงท้าย .md เช่น SOP/network.md');
         currentPath = path;
+        currentPathInput.value = path;
+        selectedFolder = folderOf(path);
         editor.value = `# ${path.split('/').pop().replace(/\.md$/, '').replaceAll('-', ' ')}\n\n`;
-        renderNotes();
-        setStatus(`Editing new note ${path}`);
+        showNotice('กำลังเขียนเอกสารใหม่ กด “บันทึกเข้าคลังความรู้” เมื่อพร้อมให้ AI ใช้งาน');
+        renderAll();
+        setStatus(`เอกสารใหม่ ${path}`);
       };
 
+      currentPathInput.addEventListener('change', () => {
+        currentPath = currentPathInput.value.trim();
+        newPath.value = currentPath;
+      });
+
       document.querySelector('#saveBtn').onclick = async () => {
-        if (!currentPath) return setStatus('เลือกหรือสร้าง note ก่อน');
+        currentPath = currentPathInput.value.trim() || currentPath;
+        if (!currentPath) return toast('เลือกหรือสร้างเอกสารก่อน');
+        if (!currentPath.endsWith('.md')) return toast('ชื่อไฟล์ต้องลงท้าย .md');
         const data = await api('/api/admin/knowledge/file', { method: 'POST', body: JSON.stringify({ path: currentPath, content: editor.value }) });
-        setStatus(`Saved ${data.path}. Indexed ${data.index.count} notes.`);
-        await loadNotes();
+        selectedFolder = folderOf(data.path);
+        showNotice('');
+        toast('บันทึกเข้าคลังความรู้แล้ว สามารถไปถาม AI จากเอกสารนี้ได้เลย');
+        setStatus(`พร้อมใช้งาน: ${data.path}`);
+        await refreshAll();
       };
 
       document.querySelector('#deleteBtn').onclick = async () => {
-        if (!currentPath) return setStatus('เลือก note ก่อน');
-        if (!confirm(`Delete ${currentPath}?`)) return;
+        if (!currentPath) return toast('เลือกเอกสารก่อน');
+        const isSavedFile = notes.some((note) => note.path === currentPath);
+        if (!isSavedFile) {
+          editor.value = '';
+          currentPath = '';
+          currentPathInput.value = '';
+          showNotice('');
+          toast('ทิ้ง draft ที่ยังไม่ได้บันทึกแล้ว');
+          renderAll();
+          return;
+        }
+        if (!confirm(`ลบ ${currentPath}?`)) return;
         const data = await api('/api/admin/knowledge/file', { method: 'DELETE', body: JSON.stringify({ path: currentPath }) });
         editor.value = '';
         currentPath = '';
-        setStatus(`Deleted ${data.path}. Indexed ${data.index.count} notes.`);
-        await loadNotes();
+        currentPathInput.value = '';
+        showNotice('');
+        toast(`ลบ ${data.path} แล้ว`);
+        await refreshAll();
       };
 
       document.querySelector('#reindexBtn').onclick = async () => {
         const data = await api('/api/admin/knowledge/reindex', { method: 'POST', body: '{}' });
-        setStatus(`Reindexed ${data.index.count} notes.`);
-        await loadNotes();
+        toast(`อัปเดตคลังความรู้แล้ว ${data.index.count} เอกสาร`);
+        await refreshAll();
       };
 
-      loadNotes().catch((error) => setStatus(error.message));
-      loadOcrStatus().catch((error) => setStatus(error.message));
+      document.querySelector('#refreshBtn').onclick = () => refreshAll().then(() => toast('อัปเดตสถานะล่าสุดแล้ว')).catch((error) => toast(error.message));
+
+      refreshAll().catch((error) => toast(error.message));
     </script>
   </body>
 </html>

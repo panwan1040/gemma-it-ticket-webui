@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
+  ClipboardList,
   BookOpen,
   Bot,
   CheckCircle2,
@@ -68,10 +69,10 @@ function Sidebar({ resetChat, mode, knowledgeCount, models = [], selectedModel, 
   return (
     <aside className="hidden w-72 shrink-0 border-r border-zinc-200 bg-white p-4 lg:flex lg:flex-col">
       <div className="flex items-center gap-3 px-2 py-2">
-        <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-zinc-950 text-white"><Sparkles size={17} /></div>
+        <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-blue-950 text-white"><ClipboardList size={17} /></div>
         <div>
-          <div className="text-sm font-semibold text-zinc-950">Gemma Desk</div>
-          <div className="text-xs text-zinc-500">Local AI ticket triage</div>
+          <div className="text-sm font-semibold text-zinc-950">IT Service Desk</div>
+          <div className="text-xs text-zinc-500">Create tickets for IT team</div>
         </div>
       </div>
 
@@ -79,14 +80,14 @@ function Sidebar({ resetChat, mode, knowledgeCount, models = [], selectedModel, 
 
       <nav className="mt-5 space-y-1">
         <div className="flex items-center gap-3 rounded-xl bg-zinc-100 px-3 py-2.5 text-sm font-medium text-zinc-950">
-          <MessageSquare size={16} /> Chat intake
+          <ClipboardList size={16} /> แจ้งปัญหา IT
         </div>
-        <div className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm text-zinc-500">
-          <FileText size={16} /> Ticket draft
-        </div>
-        <div className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm text-zinc-500">
-          <BookOpen size={16} /> Knowledge vault
-        </div>
+        <a href="/knowledge-chat" className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm text-zinc-500 hover:bg-emerald-50 hover:text-emerald-700">
+          <BookOpen size={16} /> ถามคลังความรู้
+        </a>
+        <a href="/admin" className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm text-zinc-500 hover:bg-zinc-100 hover:text-zinc-950">
+          <FileText size={16} /> จัดการเอกสาร
+        </a>
       </nav>
 
       <div className="mt-auto rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
@@ -144,11 +145,11 @@ function ChatBubble({ item }) {
 
 function ChatPane({ messages, input, setInput, sendMessage, isThinking, resetChat, mode }) {
   return (
-    <section className="flex min-h-0 flex-1 flex-col bg-slate-50">
-      <header className="flex h-16 shrink-0 items-center justify-between border-b border-zinc-200 bg-white px-4 sm:px-6">
+    <section className="flex min-h-0 flex-1 flex-col bg-blue-50/40">
+      <header className="flex h-16 shrink-0 items-center justify-between border-b border-blue-100 bg-white px-4 sm:px-6">
         <div>
-          <h1 className="text-base font-semibold text-zinc-950">IT Ticket Chat</h1>
-          <p className="text-xs text-zinc-500">คุยเก็บบริบท แล้วให้ AI สรุป ticket draft</p>
+          <h1 className="text-base font-semibold text-zinc-950">แจ้งปัญหา IT และสร้าง Ticket</h1>
+          <p className="text-xs text-zinc-500">หน้านี้ใช้เก็บข้อมูลเคสและบันทึกลง Google Sheet ไม่ใช่แชทถามเอกสารทั่วไป</p>
         </div>
         <div className="flex items-center gap-2">
           <Pill tone={mode === 'local-gemma' ? 'ok' : mode === 'fallback-rules' ? 'warn' : 'neutral'}>{mode}</Pill>
@@ -161,9 +162,10 @@ function ChatPane({ messages, input, setInput, sendMessage, isThinking, resetCha
           <AnimatePresence>
             {messages.length ? messages.map((item, index) => <ChatBubble key={`${index}-${item.role}`} item={item} />) : (
               <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="mx-auto mt-16 max-w-md text-center">
-                <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-white text-brand-600 shadow-sm ring-1 ring-zinc-200"><Bot size={22} /></div>
-                <h2 className="mt-5 text-xl font-semibold tracking-[-0.02em] text-zinc-950">เริ่มจากแจ้งปัญหาสั้นๆ</h2>
-                <p className="mt-2 text-sm leading-6 text-zinc-500">เช่น “กล้องหน้าโกดังดูไม่ได้” แล้ว AI จะถามต่อแบบ support agent ที่รู้บริบทจาก knowledge vault</p>
+                <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-blue-950 text-white shadow-sm ring-1 ring-blue-100"><ClipboardList size={22} /></div>
+                <h2 className="mt-5 text-xl font-semibold tracking-[-0.02em] text-zinc-950">เริ่มจากแจ้งปัญหาที่ต้องการให้ IT ช่วย</h2>
+                <p className="mt-2 text-sm leading-6 text-zinc-500">เช่น “เครื่องปริ้นชั้น 2 พิมพ์ไม่ได้” แล้ว AI จะถามข้อมูลที่จำเป็นเพื่อสร้าง ticket ให้ทีม IT</p>
+                <a href="/knowledge-chat" className="mt-4 inline-flex rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-100">ถ้าต้องการถามเอกสาร ไป Knowledge Chat</a>
               </motion.div>
             )}
           </AnimatePresence>
@@ -183,11 +185,11 @@ function ChatPane({ messages, input, setInput, sendMessage, isThinking, resetCha
               }
             }}
             className="min-h-24 w-full resize-none border-0 bg-transparent text-sm leading-6 text-zinc-900 outline-none placeholder:text-zinc-400"
-            placeholder="พิมพ์ปัญหา หรือข้อมูลเพิ่มเติม..."
+            placeholder="พิมพ์ปัญหาที่ต้องการแจ้ง IT หรือข้อมูลเพิ่มเติม..."
           />
           <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex gap-2 overflow-x-auto">
-              {['กล้องหน้าโกดังดูไม่ได้', 'ดูไม่ได้ทุกเครื่อง เริ่มเมื่อเช้า', 'ขึ้น no signal'].map((sample) => (
+              {['เครื่องปริ้นพิมพ์ไม่ได้', 'คอมเปิดไม่ติด', 'กล้องหน้าโกดังดูไม่ได้'].map((sample) => (
                 <button key={sample} onClick={() => setInput(sample)} className="shrink-0 rounded-full border border-zinc-200 px-3 py-1.5 text-xs text-zinc-500 hover:bg-zinc-50">{sample}</button>
               ))}
             </div>
