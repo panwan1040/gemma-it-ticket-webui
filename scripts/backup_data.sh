@@ -10,6 +10,8 @@ items=()
 [ -f data/tickets.jsonl ] && items+=(data/tickets.jsonl)
 [ -d data/attachments ] && items+=(data/attachments)
 [ -f data/rag-index.json ] && items+=(data/rag-index.json)
+[ -f data/admin-audit.jsonl ] && items+=(data/admin-audit.jsonl)
+[ -d data/archive ] && items+=(data/archive)
 [ -d knowledge ] && items+=(knowledge)
 if [ ${#items[@]} -eq 0 ]; then
   echo "No data files found to back up." >&2

@@ -16,8 +16,8 @@
     "preview": "vite preview --host 127.0.0.1 --port 4173",
     "test": "node --test test/**/*.test.js",
     "check": "npm test && npm run build",
-    "backup": "scripts/backup_data.sh",
-    "restore": "scripts/restore_data.sh",
+    "backup": "bash scripts/backup_data.sh",
+    "restore": "bash scripts/restore_data.sh",
     "validate:tickets": "node scripts/validate_tickets.js",
     "archive:tickets": "node scripts/archive_tickets.js"
   },
