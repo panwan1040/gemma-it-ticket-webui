@@ -14,6 +14,7 @@ let llmModel = process.env.LLM_MODEL || 'gemma4-e4b-qat';
 const sheetWebhookUrl = process.env.GOOGLE_SHEET_WEBHOOK_URL || '';
 const localLogPath = path.join(process.cwd(), 'data', 'tickets.jsonl');
 const ragIndexPath = path.join(process.cwd(), 'data', 'rag-index.json');
+const attachmentDir = path.join(process.cwd(), 'data', 'attachments');
 const staticDir = path.join(process.cwd(), 'dist');
 const knowledgeDir = path.join(process.cwd(), 'knowledge');
 const adminAuth = process.env.ADMIN_AUTH || 'admin:icetong';
@@ -31,6 +32,7 @@ const ollamaAppBin = '/Applications/Ollama.app/Contents/Resources/ollama';
 
 app.use(express.json({ limit: `${Math.max(32, typhoonMaxUploadMb + 8)}mb` }));
 app.use(express.static(staticDir));
+app.use('/attachments', express.static(attachmentDir));
 app.use(express.static('public'));
 
 const systemPrompt = `You are a senior Thai IT Support Admin for an internal helpdesk.
@@ -46,10 +48,12 @@ Style:
 - Avoid long paragraphs. Keep each paragraph under 2 short sentences.
 - Accept and triage the reported issue category directly; never say you only support CCTV/NVR.
 - Ask smart follow-up questions, not generic checklists.
-- Ask at most 3 questions per reply.
+- Ask one question per reply by default. Ask at most 2 only when the questions are tightly related.
+- Never ask a long checklist.
 - Prefer natural concise questions such as asking for callback phone, exact building/area, department, affected device, and whether there is anything else to add.
 - Prioritize questions that change urgency, routing, asset identification, or first action.
 - If enough information exists, stop asking, say IT has enough information to open a ticket, mention that IT will contact the requester back, summarize known details as bullets, and ask if there is anything else to add.
+- If the user only attaches a file/image/PDF or OCR text without clearly describing the issue, acknowledge the attachment briefly and ask exactly one question: what issue should IT check from this file? Do not say you are unsure whether it is related to IT. Do not list example questions.
 
 Return exactly one JSON object:
 {
@@ -78,6 +82,7 @@ Readiness rules:
 - Ready when support can take first action: category, affected asset/location, symptom, impact, and rough scope/urgency.
 - Do not block saving because screenshot or exact start time is missing; list it as optional missing info.
 - If missing only contact, exact sub-location, department, or optional evidence, ask briefly instead of producing a long explanation.
+- If an attachment is present, treat it as supporting evidence and include it in ข้อมูลที่ได้รับ. If OCR text is unclear or unrelated, say only that the file was received and ask for the issue in one short question.
 - If the user does not know technical details, do not press them for model names. Ask for observable symptoms and location instead.
 
 Urgency rules:
@@ -99,6 +104,26 @@ function requireAdmin(req, res, next) {
     return;
   }
   next();
+}
+
+function safeAttachmentName(name) {
+  const original = String(name || 'attachment');
+  const ext = original.includes('.') ? original.split('.').pop().toLowerCase().replace(/[^a-z0-9]/g, '') : 'bin';
+  const base = slugifyFileName(original) || 'attachment';
+  return `${Date.now()}-${base}.${ext || 'bin'}`;
+}
+
+function attachmentPublicPath(relativePath) {
+  return `/attachments/${String(relativePath || '').split('/').map(encodeURIComponent).join('/')}`;
+}
+
+function summarizeAttachments(attachments = []) {
+  return attachments.map((item, index) => {
+    const lines = [`${index + 1}. ${item.name || 'attachment'}`];
+    if (item.url || item.path) lines.push(`ไฟล์: ${item.url || item.path}`);
+    if (item.ocrText) lines.push(`ข้อความที่อ่านได้: ${String(item.ocrText).slice(0, 1200)}`);
+    return lines.join(' | ');
+  }).join('\n');
 }
 
 function slugifyFileName(name) {
@@ -151,7 +176,7 @@ Instructions:
 - Return only clean Markdown.
 - Preserve Thai and English text exactly when possible.
 - Include all visible document information.
-- Tables must be rendered as clean HTML <table>...</table>.
+- Tables must be rendered as GitHub-Flavored Markdown tables, not HTML.
 - If there are figures, charts, stamps, logos, or photos, wrap a short Thai description in <figure>...</figure>.
 - If text is unclear, mark it as [อ่านไม่ชัด] instead of guessing.
 - Do not include explanations outside the extracted Markdown.`;
@@ -483,14 +508,21 @@ async function saveIncidentNote(row) {
   await fs.writeFile(file, note, 'utf8');
 }
 
-async function saveTicket(ticket, sourceMessage, agentReply, transcript = []) {
+async function saveTicket(ticket, sourceMessage, agentReply, transcript = [], attachments = []) {
+  const attachmentSummary = summarizeAttachments(attachments);
   const row = {
     timestamp: new Date().toISOString(),
     sourceMessage,
     agentReply,
     transcript: transcript.map((item) => `${item.role}: ${item.content}`).join('\n'),
+    'ไฟล์แนบ': attachmentSummary,
+    attachments,
     ...ticket
   };
+
+  if (attachmentSummary) {
+    row['ข้อมูลที่ได้รับ'] = `${row['ข้อมูลที่ได้รับ'] || ''}\n\nไฟล์แนบ:\n${attachmentSummary}`.trim();
+  }
 
   await fs.mkdir(path.dirname(localLogPath), { recursive: true });
   await fs.appendFile(localLogPath, `${JSON.stringify(row)}\n`, 'utf8');
@@ -736,6 +768,63 @@ app.get('/api/config', (_req, res) => {
   res.json({ ok: true, ...appConfig });
 });
 
+
+app.post('/api/attachments', async (req, res) => {
+  try {
+    const file = req.body?.file;
+    if (!file || typeof file !== 'object') {
+      res.status(400).json({ error: 'file is required' });
+      return;
+    }
+
+    const base64 = stripDataUrl(file.base64);
+    const sizeMb = Buffer.byteLength(base64 || '', 'base64') / 1024 / 1024;
+    if (!base64 || sizeMb > typhoonMaxUploadMb) {
+      res.status(400).json({ error: `attachment must be base64 and <= ${typhoonMaxUploadMb}MB` });
+      return;
+    }
+
+    const day = new Date().toISOString().slice(0, 10);
+    const safeName = safeAttachmentName(file.name);
+    const relativePath = `${day}/${safeName}`;
+    const full = path.join(attachmentDir, relativePath);
+    await fs.mkdir(path.dirname(full), { recursive: true });
+    await fs.writeFile(full, Buffer.from(base64, 'base64'));
+
+    let ocrText = '';
+    let ocrOk = false;
+    let ocrError = '';
+    if (isOcrSupportedFile(file.name, file.type)) {
+      try {
+        const status = await getTyphoonOcrStatus();
+        if (!status.available) await startTyphoonOcrWorker();
+        const note = await parseWithTyphoonOcr(file);
+        ocrText = String(note.content || '').slice(0, 5000);
+        ocrOk = Boolean(ocrText.trim());
+      } catch (error) {
+        ocrError = error.message;
+      }
+    }
+
+    res.json({
+      ok: true,
+      attachment: {
+        id: `${day}/${safeName}`,
+        name: String(file.name || safeName),
+        type: String(file.type || 'application/octet-stream'),
+        size: Math.round(sizeMb * 1024 * 1024),
+        path: `data/attachments/${relativePath}`,
+        url: attachmentPublicPath(relativePath),
+        ocrOk,
+        ocrText,
+        ocrError
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.get('/api/rag/search', async (req, res) => {
   const q = String(req.query.q || '');
   res.json(await searchKnowledge(q));
@@ -743,6 +832,8 @@ app.get('/api/rag/search', async (req, res) => {
 
 app.post('/api/chat', async (req, res) => {
   const messages = Array.isArray(req.body?.messages) ? req.body.messages : [];
+  const attachments = Array.isArray(req.body?.attachments) ? req.body.attachments : [];
+  const detailed = Boolean(req.body?.detailed);
   const cleanMessages = messages
     .filter((item) => item && ['user', 'assistant'].includes(item.role) && String(item.content || '').trim())
     .slice(-16)
@@ -765,21 +856,62 @@ app.post('/api/chat', async (req, res) => {
   res.json({ mode, ...result });
 });
 
+
+async function completeKnowledgeAnswer({ conversation, ragContext, attachmentText, detailed = false }) {
+  const baseSystem = `You are a helpful Thai document and knowledge-base chatbot.
+Answer in Thai unless the user asks for English. You can answer longer and more conversationally than the IT ticket intake agent.
+Use Attached File Text first when present, then Relevant Knowledge.
+If OCR/file text is unavailable, say clearly that the file was received but the readable text is not available, then suggest asking the user to upload a clearer file or enable OCR.
+Do not invent policy, asset names, contacts, or exact procedures that are not in the knowledge or attached text.
+When useful, structure the answer with short headings, bullet points, and GitHub-Flavored Markdown tables. Do not use raw HTML tables.`;
+  const context = `Attached File Text:\n${attachmentText || '(no attached readable text)'}\n\nRelevant Knowledge:\n${ragContext || '(no direct matches)'}\n\nConversation:\n${conversation}`;
+  const call = async (messages, maxTokens = 2200) => {
+    const response = await fetch(`${llmBaseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: llmModel, temperature: detailed ? 0.15 : 0.2, max_tokens: maxTokens, messages })
+    });
+    if (!response.ok) throw new Error(`LLM HTTP ${response.status}`);
+    const data = await response.json();
+    const answer = data.choices?.[0]?.message?.content?.trim();
+    if (!answer) throw new Error('empty model response');
+    return answer;
+  };
+  if (!detailed) {
+    return await call([
+      { role: 'system', content: baseSystem },
+      { role: 'user', content: `${context}\n\nตอบคำถามล่าสุดโดยอ้างอิงไฟล์แนบและคลังความรู้ด้านบน` }
+    ]);
+  }
+  const draft = await call([
+    { role: 'system', content: `${baseSystem}\nCreate a careful draft answer. Focus on coverage and evidence. Do not show hidden reasoning.` },
+    { role: 'user', content: `${context}\n\nสร้างคำตอบร่างแรกที่ละเอียดและอ้างอิงจากข้อมูลเท่านั้น` }
+  ], 2400);
+  return await call([
+    { role: 'system', content: `${baseSystem}\nYou are now the reviewer and final editor. Improve correctness, clarity, and usefulness. Remove unsupported claims. Keep the final answer readable with headings and bullets. Do not mention internal draft/review steps.` },
+    { role: 'user', content: `${context}\n\nDraft answer:\n${draft}\n\nตรวจทานและเรียบเรียงเป็นคำตอบสุดท้ายที่ชัดเจน มีเหตุผล และไม่มั่ว` }
+  ], 2600);
+}
+
 app.post('/api/knowledge-chat', async (req, res) => {
   const messages = Array.isArray(req.body?.messages) ? req.body.messages : [];
+  const attachments = Array.isArray(req.body?.attachments) ? req.body.attachments : [];
+  const detailed = Boolean(req.body?.detailed);
   const cleanMessages = messages
     .filter((item) => item && ['user', 'assistant'].includes(item.role) && String(item.content || '').trim())
     .slice(-20)
     .map((item) => ({ role: item.role, content: String(item.content).trim() }));
 
   const latestUser = [...cleanMessages].reverse().find((item) => item.role === 'user')?.content || '';
-  if (!latestUser) {
+  const attachmentText = summarizeAttachments(attachments);
+  if (!latestUser && !attachmentText) {
     res.status(400).json({ error: 'at least one user message is required' });
     return;
   }
 
-  const rag = await searchKnowledge(cleanMessages.map((item) => `${item.role}: ${item.content}`).join('\n'), 6);
-  if (!rag.count) {
+  const searchText = [cleanMessages.map((item) => `${item.role}: ${item.content}`).join('\n'), attachmentText].filter(Boolean).join('\n');
+  const rag = await searchKnowledge(searchText, 6);
+  if (!rag.count && !attachmentText) {
     res.json({
       mode: 'empty-knowledge',
       answer: 'ตอนนี้ยังไม่มีเอกสารในคลังความรู้ครับ ไปที่ /admin แล้วอัปโหลดหรือสร้าง note ก่อน จากนั้นกด Save + Reindex แล้วกลับมาถามใหม่ได้ครับ',
@@ -790,35 +922,8 @@ app.post('/api/knowledge-chat', async (req, res) => {
 
   try {
     const conversation = cleanMessages.map((item) => `${item.role === 'user' ? 'User' : 'Assistant'}: ${item.content}`).join('\n');
-    const response = await fetch(`${llmBaseUrl}/chat/completions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: llmModel,
-        temperature: 0.2,
-        max_tokens: 2200,
-        messages: [
-          {
-            role: 'system',
-            content: `You are a helpful Thai knowledge-base chatbot for an internal company knowledge vault.
-Answer in Thai unless the user asks for English. You can answer longer and more conversationally than the IT ticket intake agent.
-Use the provided Relevant Knowledge as your primary source. If the answer is not in the knowledge, say so clearly and suggest what document should be added.
-Do not invent policy, asset names, contacts, or exact procedures that are not in the knowledge.
-When useful, structure the answer with short headings and bullet points.`
-          },
-          {
-            role: 'user',
-            content: `Relevant Knowledge:\n${rag.context || '(no direct matches)'}\n\nConversation:\n${conversation}\n\nตอบคำถามล่าสุดโดยอ้างอิงคลังความรู้ด้านบน`
-          }
-        ]
-      })
-    });
-
-    if (!response.ok) throw new Error(`LLM HTTP ${response.status}`);
-    const data = await response.json();
-    const answer = data.choices?.[0]?.message?.content?.trim();
-    if (!answer) throw new Error('empty model response');
-    res.json({ mode: 'local-gemma', answer, ragContext: { count: rag.count, items: rag.items } });
+    const answer = await completeKnowledgeAnswer({ conversation, ragContext: rag.context, attachmentText, detailed });
+    res.json({ mode: detailed ? 'detailed-gemma' : 'local-gemma', answer, ragContext: { count: rag.count, items: rag.items } });
   } catch {
     res.json({
       mode: 'fallback-rag',
@@ -835,6 +940,7 @@ app.post('/api/tickets', async (req, res) => {
   const sourceMessage = String(req.body?.sourceMessage || '');
   const agentReply = String(req.body?.agentReply || '');
   const transcript = Array.isArray(req.body?.transcript) ? req.body.transcript : [];
+  const attachments = Array.isArray(req.body?.attachments) ? req.body.attachments : [];
 
   if (!ticket || typeof ticket !== 'object') {
     res.status(400).json({ error: 'ticket is required' });
@@ -842,7 +948,7 @@ app.post('/api/tickets', async (req, res) => {
   }
 
   try {
-    const saved = await saveTicket(ticket, sourceMessage, agentReply, transcript);
+    const saved = await saveTicket(ticket, sourceMessage, agentReply, transcript, attachments);
     res.json({
       ok: true,
       saved: saved.row,

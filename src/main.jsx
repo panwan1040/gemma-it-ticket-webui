@@ -1,5 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
   AlertCircle,
@@ -17,6 +19,7 @@ import {
   Loader2,
   Menu,
   MoreVertical,
+  Paperclip,
   Plus,
   RefreshCcw,
   Save,
@@ -37,7 +40,7 @@ const defaultConfig = {
 
 const publicNavItems = [
   { path: '/', label: 'แจ้งปัญหา', description: 'รับเรื่องและสร้างใบงาน', icon: ClipboardList },
-  { path: '/knowledge-chat', label: 'ถามคลังความรู้', description: 'ถามจากเอกสารภายใน', icon: BookOpen }
+  { path: '/knowledge-chat', label: 'ถาม/สรุปเอกสาร', description: 'ถามคลังความรู้หรือไฟล์แนบ', icon: BookOpen }
 ];
 const routeItems = [
   ...publicNavItems,
@@ -196,17 +199,37 @@ function AppShell({ config, path, navigate, children }) {
   </main>;
 }
 
+function normalizeMarkdown(value) {
+  return String(value || '')
+    .replace(/\r\n/g, '\n')
+    .replace(/([^\n])\n(\|[^\n]+\|\n\|[\s:|\-]+\|)/g, '$1\n\n$2')
+    .replace(/```([^\n`]+)?\n([\s\S]*?)$/g, (_match, lang = '', body = '') => `\`\`\`${lang}\n${body}\n\`\`\``)
+    .trim();
+}
+function MarkdownMessage({ children }) {
+  return <div className="markdown-message">
+    <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
+      a: ({ node, ...props }) => <a {...props} target="_blank" rel="noreferrer" />,
+      table: ({ node, ...props }) => <div className="markdown-table-wrap"><table {...props} /></div>
+    }}>{normalizeMarkdown(children)}</ReactMarkdown>
+  </div>;
+}
 function ChatBubble({ item }) {
   const isUser = item.role === 'user';
+  const visibleText = item.displayContent || item.content;
   return <motion.div className={cn('message-row', isUser && 'from-user')} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
     {!isUser ? <div className="avatar muted"><Bot size={15} /></div> : null}
-    <div className={cn('bubble', isUser ? 'bubble-user' : 'bubble-agent')}><p>{item.content}</p></div>
+    <div className={cn('bubble', isUser ? 'bubble-user' : 'bubble-agent')}>
+      {visibleText ? <MarkdownMessage>{visibleText}</MarkdownMessage> : null}
+      {item.attachments?.length ? <div className="bubble-attachments">{item.attachments.map((file) => <span key={file.id || file.name}><Paperclip size={13} />{file.name}</span>)}</div> : null}
+    </div>
     {isUser ? <div className="avatar"><User size={15} /></div> : null}
   </motion.div>;
 }
-function ChatComposer({ value, onChange, onSend, disabled, placeholder, helper, compact = false }) {
+function ChatComposer({ value, onChange, onSend, disabled, placeholder, helper, compact = false, onFiles, attachments = [], uploading = false }) {
   return <div className="composer-wrap">
     <div className={cn('composer', compact && 'compact')}>
+      {attachments.length ? <div className="attachment-strip">{attachments.map((item) => <span key={item.id || item.name}><Paperclip size={13} />{item.name}{item.ocrOk ? <small>อ่านข้อความแล้ว</small> : null}</span>)}</div> : null}
       <textarea value={value} placeholder={placeholder} onChange={(event) => onChange(event.target.value)} onKeyDown={(event) => {
         if (event.key === 'Enter' && !event.shiftKey) {
           event.preventDefault();
@@ -214,8 +237,11 @@ function ChatComposer({ value, onChange, onSend, disabled, placeholder, helper, 
         }
       }} />
       <div className="composer-row">
-        <span>{helper}</span>
-        <Button onClick={onSend} disabled={disabled}><Send size={16} />ส่งข้อความ</Button>
+        <span>{uploading ? 'กำลังแนบไฟล์...' : helper}</span>
+        <div className="composer-actions">
+          {onFiles ? <label className="attach-btn"><Paperclip size={16} />แนบไฟล์<input type="file" multiple onChange={(event) => onFiles(event.target.files)} /></label> : null}
+          <Button onClick={onSend} disabled={disabled}><Send size={16} />ส่งข้อความ</Button>
+        </div>
       </div>
     </div>
   </div>;
@@ -285,15 +311,49 @@ function TicketIntakePage({ config }) {
   const [saveStatus, setSaveStatus] = useState('');
   const [saveState, setSaveState] = useState('idle');
   const [lastAgentReply, setLastAgentReply] = useState('');
+  const [attachments, setAttachments] = useState([]);
+  const [uploadingAttachment, setUploadingAttachment] = useState(false);
   const [sheetOpen, setSheetOpen] = useState(false);
   const examples = ['เครื่องปริ้นพิมพ์ไม่ได้', 'Wi-Fi ใช้งานไม่ได้', 'คอมเปิดไม่ติด', 'กล้องดูไม่ได้', 'เข้าอีเมลไม่ได้'];
   const summary = useMemo(() => buildChatSummary(ticket, missingFields, saveState === 'saved', saveStatus), [ticket, missingFields, saveState, saveStatus]);
 
+  function attachmentContext() {
+    if (!attachments.length) return '';
+    return `ไฟล์แนบ:\n${attachments.map((item, index) => `${index + 1}. ${item.name}${item.ocrText ? `\nข้อความ OCR:\n${item.ocrText.slice(0, 2200)}` : `\nบันทึกไฟล์ไว้ที่ ${item.path || item.url || ''}`}`).join('\n\n')}`;
+  }
+  async function uploadChatFiles(fileList) {
+    const files = Array.from(fileList || []).filter((file) => file && file.size > 0);
+    if (!files.length) return;
+    setUploadingAttachment(true);
+    try {
+      const uploaded = [];
+      for (const file of files) {
+        const base64 = await readFileAsBase64(file);
+        const response = await fetch('/api/attachments', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ file: { name: file.name, type: file.type, base64 } })
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'upload failed');
+        uploaded.push(data.attachment);
+      }
+      setAttachments((current) => [...current, ...uploaded]);
+    } catch (error) {
+      setMessages((current) => [...current, { role: 'assistant', content: `แนบไฟล์ไม่สำเร็จครับ: ${error.message}` }]);
+    } finally {
+      setUploadingAttachment(false);
+    }
+  }
   async function sendMessage() {
-    const content = input.trim();
-    if (!content || isThinking) return;
-    const nextMessages = [...messages, { role: 'user', content }];
-    setMessages(nextMessages);
+    const userText = input.trim();
+    const fileContext = attachmentContext();
+    if ((!userText && !fileContext) || isThinking) return;
+    const content = [userText, fileContext].filter(Boolean).join('\n\n');
+    const displayContent = userText || 'แนบไฟล์ให้ตรวจสอบ';
+    const visibleMessages = [...messages, { role: 'user', content: displayContent, displayContent, attachments }];
+    const nextMessages = [...messages.map(({ role, content }) => ({ role, content })), { role: 'user', content }];
+    setMessages(visibleMessages);
     setInput('');
     setIsThinking(true);
     setMode('thinking');
@@ -308,14 +368,14 @@ function TicketIntakePage({ config }) {
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'chat failed');
       const reply = data.agentReply || 'รับทราบครับ ขอข้อมูลเพิ่มเติมอีกนิดครับ';
-      setMessages([...nextMessages, { role: 'assistant', content: reply }]);
+      setMessages([...visibleMessages, { role: 'assistant', content: reply }]);
       setTicket((current) => ({ ...current, ...(data.ticket || {}) }));
       setMode(data.mode || 'done');
       setMissingFields(data.missingFields || []);
       setLastAgentReply(reply);
     } catch (error) {
       setMode('error');
-      setMessages([...nextMessages, { role: 'assistant', content: `เกิดข้อผิดพลาดครับ: ${error.message}` }]);
+      setMessages([...visibleMessages, { role: 'assistant', content: `เกิดข้อผิดพลาดครับ: ${error.message}` }]);
     } finally {
       setIsThinking(false);
     }
@@ -332,6 +392,7 @@ function TicketIntakePage({ config }) {
           sourceMessage: messages.filter((item) => item.role === 'user').map((item) => item.content).join('\n'),
           agentReply: lastAgentReply,
           transcript: messages,
+          attachments,
           ticket
         })
       });
@@ -346,6 +407,7 @@ function TicketIntakePage({ config }) {
         setSaveState('saved');
         setSaveStatus(okText);
         setMessages((current) => [...current, { role: 'assistant', content: `ทางทีม IT ได้ข้อมูลครบถ้วนแล้วครับ จะเปิดใบงานและติดต่อกลับอีกครั้ง\n\n${buildChatSummary(ticket, [], true, okText)}\n\nหากมีข้อมูลเพิ่มเติม แจ้งเพิ่มได้เลยครับ` }]);
+        setAttachments([]);
         setSheetOpen(false);
       }
     } catch (error) {
@@ -365,6 +427,7 @@ function TicketIntakePage({ config }) {
     setSaveStatus('');
     setSaveState('idle');
     setLastAgentReply('');
+    setAttachments([]);
   }
 
   return <div className="page chat-page">
@@ -388,7 +451,7 @@ function TicketIntakePage({ config }) {
         <ChevronRight size={18} />
       </motion.button> : null}
     </section>
-    <ChatComposer value={input} onChange={setInput} onSend={sendMessage} disabled={!input.trim() || isThinking} placeholder="พิมพ์ปัญหา หรือข้อมูลเพิ่มเติม..." helper="กด Enter เพื่อส่ง, Shift+Enter เพื่อขึ้นบรรทัดใหม่" compact />
+    <ChatComposer value={input} onChange={setInput} onSend={sendMessage} disabled={(!input.trim() && !attachments.length) || isThinking || uploadingAttachment} placeholder="พิมพ์ปัญหา หรือแนบรูป/PDF เพิ่มเติม..." helper="กด Enter เพื่อส่ง, Shift+Enter เพื่อขึ้นบรรทัดใหม่" compact onFiles={uploadChatFiles} attachments={attachments} uploading={uploadingAttachment} />
     <TicketSummarySheet open={sheetOpen} onClose={() => setSheetOpen(false)} ticket={ticket} setTicket={setTicket} missingFields={missingFields} saveTicket={saveTicket} isSaving={isSaving} saveState={saveState} saveStatus={saveStatus} />
   </div>;
 }
@@ -400,35 +463,85 @@ function KnowledgeChatPage() {
   const [mode, setMode] = useState('ready');
   const [sources, setSources] = useState([]);
   const [sourceOpen, setSourceOpen] = useState(false);
+  const [attachments, setAttachments] = useState([]);
+  const [uploadingAttachment, setUploadingAttachment] = useState(false);
+  const [detailedMode, setDetailedMode] = useState(false);
+  const [processStep, setProcessStep] = useState('พร้อมรับคำถาม');
   const [isThinking, setIsThinking] = useState(false);
   const prompts = ['สรุปขั้นตอนแก้ปัญหา printer', 'มีคู่มือ Wi‑Fi อะไรบ้าง', 'ค้นหา SOP เกี่ยวกับบัญชีผู้ใช้'];
 
+  function attachmentContext() {
+    if (!attachments.length) return '';
+    return `ไฟล์แนบสำหรับวิเคราะห์:\n${attachments.map((item, index) => `${index + 1}. ${item.name}${item.ocrText ? `\nข้อความจากไฟล์:\n${item.ocrText.slice(0, 5000)}` : `\nระบบบันทึกไฟล์ไว้ที่ ${item.path || item.url || ''} แต่ยังอ่านข้อความจากไฟล์ไม่ได้`}`).join('\n\n')}`;
+  }
+  async function uploadKnowledgeFiles(fileList) {
+    const files = Array.from(fileList || []).filter((file) => file && file.size > 0);
+    if (!files.length) return;
+    setUploadingAttachment(true);
+    try {
+      const uploaded = [];
+      for (const file of files) {
+        const base64 = await readFileAsBase64(file);
+        const response = await fetch('/api/attachments', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ file: { name: file.name, type: file.type, base64 } })
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'upload failed');
+        uploaded.push(data.attachment);
+      }
+      setAttachments((current) => [...current, ...uploaded]);
+    } catch (error) {
+      setMessages((current) => [...current, { role: 'assistant', content: `แนบไฟล์ไม่สำเร็จครับ: ${error.message}` }]);
+    } finally {
+      setUploadingAttachment(false);
+    }
+  }
   async function sendMessage() {
-    const content = input.trim();
-    if (!content || isThinking) return;
-    const next = [...messages, { role: 'user', content }];
-    setMessages(next);
+    const userText = input.trim();
+    const fileContext = attachmentContext();
+    if ((!userText && !fileContext) || isThinking) return;
+    const content = [userText || 'ช่วยอ่านและสรุปไฟล์แนบนี้ให้หน่อยครับ', fileContext].filter(Boolean).join('\n\n');
+    const displayContent = userText || 'ช่วยอ่านและสรุปไฟล์แนบนี้ให้หน่อยครับ';
+    const visibleNext = [...messages, { role: 'user', content: displayContent, displayContent, attachments }];
+    const next = [...messages.map(({ role, content }) => ({ role, content })), { role: 'user', content }];
+    setMessages(visibleNext);
     setInput('');
     setIsThinking(true);
-    setStatus('กำลังค้นเอกสาร...');
+    setStatus(detailedMode ? 'กำลังวิเคราะห์แบบละเอียด...' : 'กำลังค้นเอกสาร...');
+    setProcessStep(attachments.length ? 'กำลังอ่านข้อความจากไฟล์แนบ' : 'กำลังค้นเอกสารที่เกี่ยวข้อง');
     setMode('thinking');
+    const stepTimer = window.setInterval(() => {
+      setProcessStep((current) => {
+        const steps = detailedMode
+          ? ['กำลังค้นเอกสารที่เกี่ยวข้อง', 'กำลังร่างคำตอบ', 'กำลังตรวจทานเหตุผล', 'กำลังเรียบเรียงคำตอบสุดท้าย']
+          : ['กำลังค้นเอกสารที่เกี่ยวข้อง', 'กำลังอ่านบริบท', 'กำลังเรียบเรียงคำตอบ'];
+        const index = Math.max(0, steps.indexOf(current));
+        return steps[(index + 1) % steps.length];
+      });
+    }, detailedMode ? 2600 : 1800);
     try {
       const res = await fetch('/api/knowledge-chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: next })
+        body: JSON.stringify({ messages: next, attachments, detailed: detailedMode })
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'request failed');
-      setMessages([...next, { role: 'assistant', content: data.answer }]);
+      setMessages([...visibleNext, { role: 'assistant', content: data.answer }]);
       setSources(data.ragContext?.items || []);
+      setAttachments([]);
       setMode(data.mode || 'done');
-      setStatus(friendlyStatus(data.mode));
+      setProcessStep('เสร็จแล้ว');
+      setStatus(detailedMode ? 'ตอบละเอียดแล้ว' : friendlyStatus(data.mode));
     } catch (error) {
       setMode('error');
+      setProcessStep('เกิดข้อผิดพลาด');
       setStatus('เกิดข้อผิดพลาด');
-      setMessages([...next, { role: 'assistant', content: `ระบบค้นเอกสารยังไม่พร้อมครับ: ${error.message}` }]);
+      setMessages([...visibleNext, { role: 'assistant', content: `ระบบค้นเอกสารยังไม่พร้อมครับ: ${error.message}` }]);
     } finally {
+      window.clearInterval(stepTimer);
       setIsThinking(false);
     }
   }
@@ -436,23 +549,31 @@ function KnowledgeChatPage() {
   return <div className="page knowledge-page">
     <PageTop
       title="ถามคลังความรู้"
-      description="ใช้สำหรับถามคู่มือ SOP หรือนโยบายจากเอกสารที่เพิ่มไว้ ไม่สร้างใบงาน"
-      actions={<><StatusPill tone={mode === 'error' ? 'danger' : mode === 'thinking' ? 'info' : 'ok'}>{status}</StatusPill><Button variant="secondary" onClick={() => setSourceOpen(true)}><BookOpen size={16} />แหล่งอ้างอิง ({sources.length})</Button></>}
+      description="ใช้ถามคลังความรู้ หรือแนบไฟล์เพื่อให้ช่วยอ่าน สรุป และอธิบายเอกสาร ไม่สร้างใบงาน"
+      actions={<><label className="detail-toggle"><input type="checkbox" checked={detailedMode} onChange={(event) => setDetailedMode(event.target.checked)} />ตอบละเอียด</label><StatusPill tone={mode === 'error' ? 'danger' : mode === 'thinking' ? 'info' : 'ok'}>{status}</StatusPill><Button variant="secondary" onClick={() => setSourceOpen(true)}><BookOpen size={16} />แหล่งอ้างอิง ({sources.length})</Button></>}
     />
     <section className="knowledge-layout">
       <div className="chat-canvas flat">
         <div className="chat-stream">
-          {messages.length ? messages.map((item, index) => <ChatBubble key={`${item.role}-${index}`} item={item} />) : <EmptyState icon={BookOpen} title="ถามจากเอกสารในคลัง" description="ถามเป็นภาษาปกติได้เลย ระบบจะค้นเอกสารที่เกี่ยวข้องแล้วสรุปให้อ่านง่าย">
+          {messages.length ? messages.map((item, index) => <ChatBubble key={`${item.role}-${index}`} item={item} />) : <EmptyState icon={BookOpen} title="ถามจากเอกสาร หรือแนบไฟล์ให้อ่าน" description="ถามเป็นภาษาปกติได้เลย หรือแนบ PDF/รูปภาพเพื่อให้ช่วยสรุปและอธิบายเนื้อหา">
             <div className="chip-row">{prompts.map((item) => <button key={item} onClick={() => setInput(item)}>{item}</button>)}</div>
           </EmptyState>}
-          {isThinking ? <div className="thinking"><Loader2 className="spin" size={15} />กำลังค้นเอกสารที่เกี่ยวข้อง...</div> : null}
+          {isThinking ? <ProcessingCard detailed={detailedMode} step={processStep} /> : null}
         </div>
       </div>
       <SourcePanel open={sourceOpen} onClose={() => setSourceOpen(false)} sources={sources} />
     </section>
-    <ChatComposer value={input} onChange={setInput} onSend={sendMessage} disabled={!input.trim() || isThinking} placeholder="ถามเกี่ยวกับเอกสาร..." helper="คำตอบจะแสดงแหล่งอ้างอิงเมื่อค้นเจอ" compact />
+    <ChatComposer value={input} onChange={setInput} onSend={sendMessage} disabled={(!input.trim() && !attachments.length) || isThinking || uploadingAttachment} placeholder="ถามเกี่ยวกับเอกสาร หรือแนบไฟล์เพื่อให้ช่วยสรุป..." helper="หน้านี้เหมาะกับการอ่าน/สรุปเอกสาร ไม่บันทึกใบงาน" compact onFiles={uploadKnowledgeFiles} attachments={attachments} uploading={uploadingAttachment} />
   </div>;
 }
+function ProcessingCard({ detailed, step }) {
+  const steps = detailed ? ['ค้นเอกสาร', 'ร่างคำตอบ', 'ตรวจทาน', 'เรียบเรียง'] : ['ค้นเอกสาร', 'อ่านบริบท', 'เรียบเรียง'];
+  return <motion.div className="processing-card" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
+    <div className="processing-orbit"><span /><span /><span /></div>
+    <div><strong>{step}</strong><p>{detailed ? 'โหมดละเอียดใช้เวลานานขึ้นเล็กน้อย เพราะมีการร่างและตรวจทานคำตอบ' : 'ระบบกำลังประมวลผล กรุณารอสักครู่'}</p><div className="process-steps">{steps.map((item) => <span key={item}>{item}</span>)}</div></div>
+  </motion.div>;
+}
+
 function SourcePanel({ open, onClose, sources }) {
   return <AnimatePresence>{open ? <motion.div className="source-layer" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
     <button className="sheet-backdrop" onClick={onClose} aria-label="ปิดแหล่งอ้างอิง" />

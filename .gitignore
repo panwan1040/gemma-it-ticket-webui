@@ -12,3 +12,5 @@ build/
 # OCR/runtime temp cache
 *.traineddata
 .ollama/
+# Local uploaded ticket/chat attachments
+data/attachments/

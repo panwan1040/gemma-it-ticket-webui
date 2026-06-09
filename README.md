@@ -9,6 +9,8 @@ The app helps internal support teams collect issue details, draft a work order, 
 - Thai-first IT ticket intake assistant
 - Local Gemma model through `llama.cpp`
 - Work order draft with editable fields
+- Chat file attachments for screenshots, error images, and PDFs
+- Optional OCR for attached images/PDFs before ticket drafting
 - Local ticket log at `data/tickets.jsonl`
 - Optional Google Sheets webhook
 - Knowledge chat page at `/knowledge-chat`
@@ -163,11 +165,31 @@ GOOGLE_SHEET_WEBHOOK_URL=https://script.google.com/macros/s/xxxx/exec
 
 If the webhook is empty, tickets are still saved locally.
 
+Attachments are saved locally in:
+
+```text
+data/attachments/
+```
+
+Google Sheets receives attachment names/paths and OCR text summary, not the binary file itself. This keeps Sheet logging stable and avoids Apps Script upload limits.
+
 If local save succeeds but webhook fails, the UI shows:
 
 ```text
 บันทึกในเครื่องแล้ว แต่ส่ง webhook ไม่สำเร็จ
 ```
+
+## Chat Markdown support
+
+Assistant responses render GitHub-Flavored Markdown in the chat UI, including:
+
+- headings
+- bullet and numbered lists
+- fenced code blocks
+- blockquotes
+- tables
+
+Raw HTML is not enabled in chat rendering. OCR and model prompts prefer Markdown tables so answers stay readable and safer to render.
 
 ## Knowledge library
 
