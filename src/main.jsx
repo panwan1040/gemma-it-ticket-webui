@@ -12,7 +12,9 @@ import {
   ChevronLeft,
   ChevronRight,
   ClipboardList,
+  Copy,
   Database,
+  Download,
   FileText,
   Folder,
   Inbox,
@@ -41,7 +43,8 @@ const defaultConfig = {
 
 const publicNavItems = [
   { path: '/', label: 'แจ้งปัญหา', description: 'รับเรื่องและร่างใบงาน', icon: ClipboardList },
-  { path: '/knowledge-chat', label: 'แชท AI', description: 'ถามงานหรืออ่านเอกสาร', icon: BookOpen }
+  { path: '/knowledge-chat', label: 'แชท AI', description: 'ถามงานหรืออ่านเอกสาร', icon: BookOpen },
+  { path: '/ocr', label: 'OCR Studio', description: 'อ่านข้อความและ export', icon: FileText }
 ];
 const routeItems = [
   ...publicNavItems,
@@ -128,12 +131,36 @@ function readFileAsBase64(file) {
     reader.readAsDataURL(file);
   });
 }
+function downloadBlob(filename, content, type) {
+  const blob = new Blob([content], { type });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+function escapeHtml(value) {
+  return String(value || '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
+}
+function exportOcrRowsToExcel(rows) {
+  const htmlRows = rows.map((row) => `<tr><td>${escapeHtml(row.name)}</td><td>${escapeHtml(row.status)}</td><td>${escapeHtml(row.size)}</td><td>${escapeHtml(row.text)}</td></tr>`).join('');
+  const html = `<!doctype html><html><head><meta charset="utf-8" /></head><body><table><thead><tr><th>File</th><th>Status</th><th>Size</th><th>OCR Text</th></tr></thead><tbody>${htmlRows}</tbody></table></body></html>`;
+  downloadBlob(`ocr-export-${new Date().toISOString().slice(0, 10)}.xls`, html, 'application/vnd.ms-excel;charset=utf-8');
+}
 function looksLikeTicketIntent(text) {
   return /(เปิด|สร้าง|บันทึก|แจ้ง)(\s*)(ticket|ทิกเก็ต|เคส|ใบงาน|ปัญหา)|ช่วยเปิด|ส่งให้ IT|ส่งให้ทีม IT|แจ้งซ่อม|แจ้งไอที/i.test(String(text || ''));
 }
 function goToTicketIntake(payload) {
   sessionStorage.setItem('ticket-handoff', JSON.stringify(payload));
   window.history.pushState({}, '', '/');
+  window.dispatchEvent(new PopStateEvent('popstate'));
+}
+function goToKnowledgeChat(payload) {
+  sessionStorage.setItem('ocr-handoff', JSON.stringify(payload));
+  window.history.pushState({}, '', '/knowledge-chat');
   window.dispatchEvent(new PopStateEvent('popstate'));
 }
 
@@ -254,9 +281,27 @@ function MarkdownMessage({ children }) {
 function ChatBubble({ item }) {
   const isUser = item.role === 'user';
   const visibleText = item.displayContent || item.content;
+  const [copied, setCopied] = useState(false);
+  async function copyText() {
+    const text = normalizeMarkdown(visibleText || '');
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      const area = document.createElement('textarea');
+      area.value = text;
+      document.body.appendChild(area);
+      area.select();
+      document.execCommand('copy');
+      area.remove();
+    }
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1400);
+  }
   return <motion.div className={cn('message-row', isUser && 'from-user')} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
     {!isUser ? <div className="avatar muted"><Bot size={15} /></div> : null}
     <div className={cn('bubble', isUser ? 'bubble-user' : 'bubble-agent')}>
+      {!isUser && visibleText ? <button className="bubble-copy" onClick={copyText} title="คัดลอกคำตอบ">{copied ? <CheckCircle2 size={13} /> : <Copy size={13} />}{copied ? 'คัดลอกแล้ว' : 'คัดลอก'}</button> : null}
       {visibleText ? <MarkdownMessage>{visibleText}</MarkdownMessage> : null}
       {item.attachments?.length ? <div className="bubble-attachments">{item.attachments.map((file) => <span key={file.id || file.name}><Paperclip size={13} />{file.name}<small>{attachmentStatusLabel(file)}</small></span>)}</div> : null}
     </div>
@@ -515,6 +560,134 @@ function TicketIntakePage({ config }) {
   </div>;
 }
 
+function OcrStudioPage() {
+  const [items, setItems] = useState([]);
+  const [selectedId, setSelectedId] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState('ลาก PDF/รูปภาพ/ไฟล์ข้อความมาวาง หรือกดเลือกไฟล์เพื่อ OCR');
+  const selected = items.find((item) => item.id === selectedId) || items[0] || null;
+  const readableItems = items.filter((item) => item.ocrText?.trim());
+
+  function updateItem(id, patch) {
+    setItems((current) => current.map((item) => item.id === id ? { ...item, ...patch } : item));
+  }
+  async function processFiles(fileList) {
+    const files = Array.from(fileList || []).filter((file) => file && file.size > 0);
+    if (!files.length || busy) return;
+    setBusy(true);
+    setNotice(`กำลังอ่านข้อความจาก ${files.length} ไฟล์...`);
+    const initial = files.map((file) => ({ id: crypto.randomUUID?.() || `${Date.now()}-${file.name}`, name: file.name, size: file.size, type: file.type, status: 'queued', ocrText: '', error: '' }));
+    setItems((current) => [...initial, ...current]);
+    setSelectedId(initial[0].id);
+    for (let index = 0; index < files.length; index += 1) {
+      const file = files[index];
+      const id = initial[index].id;
+      updateItem(id, { status: 'processing' });
+      try {
+        const textLike = /\.(txt|md|markdown|csv|json)$/i.test(file.name) || String(file.type || '').startsWith('text/');
+        if (textLike) {
+          const text = await file.text();
+          updateItem(id, { status: 'readable', ocrText: text, attachment: null });
+          continue;
+        }
+        const base64 = await readFileAsBase64(file);
+        const response = await fetch('/api/attachments', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ file: { name: file.name, type: file.type, base64 } })
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'OCR failed');
+        const attachment = data.attachment;
+        updateItem(id, {
+          status: attachment.ocrStatus || (attachment.ocrOk ? 'readable' : 'unreadable'),
+          ocrText: attachment.ocrText || '',
+          error: attachment.ocrError || '',
+          attachment
+        });
+      } catch (error) {
+        updateItem(id, { status: 'error', error: error.message });
+      }
+    }
+    setNotice('อ่านข้อความเสร็จแล้ว ตรวจผลก่อน copy หรือ export');
+    setBusy(false);
+  }
+  function statusText(item) {
+    if (!item) return '-';
+    if (item.status === 'queued') return 'รอคิว';
+    if (item.status === 'processing') return 'กำลังอ่าน';
+    if (item.status === 'readable') return 'อ่านสำเร็จ';
+    if (item.status === 'unreadable') return 'อ่านไม่ได้';
+    if (item.status === 'not-supported') return 'ไม่รองรับ OCR';
+    if (item.status === 'error') return 'ผิดพลาด';
+    return item.status || '-';
+  }
+  function setSelectedText(value) {
+    if (!selected) return;
+    updateItem(selected.id, { ocrText: value, status: value.trim() ? 'readable' : selected.status });
+  }
+  async function copySelected() {
+    if (!selected?.ocrText) return;
+    try {
+      await navigator.clipboard.writeText(selected.ocrText);
+    } catch {
+      const area = document.createElement('textarea');
+      area.value = selected.ocrText;
+      document.body.appendChild(area);
+      area.select();
+      document.execCommand('copy');
+      area.remove();
+    }
+    setNotice(`คัดลอกข้อความจาก ${selected.name} แล้ว`);
+  }
+  function exportSelectedTxt() {
+    if (!selected?.ocrText) return;
+    downloadBlob(`${selected.name.replace(/\.[^.]+$/, '') || 'ocr-result'}.txt`, selected.ocrText, 'text/plain;charset=utf-8');
+  }
+  function exportExcel() {
+    const rows = items.map((item) => ({ name: item.name, status: statusText(item), size: formatBytes(item.size), text: item.ocrText || item.error || '' }));
+    exportOcrRowsToExcel(rows);
+  }
+  function sendSelectedToAi() {
+    if (!selected?.ocrText) return;
+    goToKnowledgeChat({ name: selected.name, ocrText: selected.ocrText });
+  }
+
+  return <div className="page ocr-page">
+    <PageTop
+      title="OCR Studio"
+      description="อ่านข้อความจาก PDF/รูปภาพ แล้ว copy หรือ export เป็น TXT/Excel"
+      actions={<><StatusPill tone={busy ? 'info' : readableItems.length ? 'ok' : 'neutral'}>{busy ? 'กำลัง OCR' : `${readableItems.length}/${items.length || 0} อ่านได้`}</StatusPill><Button variant="secondary" disabled={!items.length} onClick={exportExcel}><Download size={16} />Export Excel</Button></>}
+    />
+    <section className="ocr-layout">
+      <aside className="ocr-sidebar">
+        <label className="ocr-drop" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); processFiles(event.dataTransfer.files); }}>
+          <UploadCloud size={24} />
+          <strong>ลากไฟล์มาวาง</strong>
+          <span>รองรับ PDF, PNG, JPG, WEBP, TXT, Markdown</span>
+          <input type="file" multiple onChange={(event) => processFiles(event.target.files)} />
+        </label>
+        <div className="notice">{notice}</div>
+        <div className="ocr-file-list">{items.length ? items.map((item) => <button key={item.id} className={cn('ocr-file', selected?.id === item.id && 'active')} onClick={() => setSelectedId(item.id)}>
+          <FileText size={16} />
+          <span><strong>{item.name}</strong><small>{statusText(item)} · {formatBytes(item.size)}</small></span>
+        </button>) : <EmptyState icon={FileText} title="ยังไม่มีไฟล์" description="เลือกไฟล์เพื่อเริ่ม OCR แล้วผลลัพธ์จะแสดงด้านขวา" />}</div>
+      </aside>
+      <main className="ocr-result">
+        {selected ? <Card className="ocr-editor">
+          <div className="sheet-head"><div><h2>{selected.name}</h2><p>{statusText(selected)}{selected.error ? ` · ${selected.error}` : ''}</p></div><StatusPill tone={selected.status === 'readable' ? 'ok' : selected.status === 'processing' ? 'info' : selected.status === 'error' || selected.status === 'unreadable' ? 'warning' : 'neutral'}>{statusText(selected)}</StatusPill></div>
+          <textarea value={selected.ocrText || ''} onChange={(event) => setSelectedText(event.target.value)} placeholder="ผล OCR จะแสดงที่นี่ และสามารถแก้ไขก่อน export ได้" />
+          <div className="ocr-actions">
+            <Button variant="secondary" disabled={!selected.ocrText} onClick={copySelected}><Copy size={16} />Copy</Button>
+            <Button variant="secondary" disabled={!selected.ocrText} onClick={exportSelectedTxt}><Download size={16} />TXT</Button>
+            <Button variant="secondary" disabled={!selected.ocrText} onClick={sendSelectedToAi}><BookOpen size={16} />ส่งไปแชท AI</Button>
+          </div>
+        </Card> : <EmptyState icon={FileText} title="เลือกไฟล์เพื่อ OCR" description="ผลลัพธ์จะแสดงเป็นข้อความที่ copy, แก้ไข และ export ได้" />}
+      </main>
+    </section>
+  </div>;
+}
+
 function KnowledgeChatPage() {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
@@ -528,6 +701,19 @@ function KnowledgeChatPage() {
   const [processStep, setProcessStep] = useState('พร้อมรับคำถาม');
   const [isThinking, setIsThinking] = useState(false);
   const prompts = ['ช่วยสรุปไฟล์นี้ให้หน่อย', 'อธิบายเรื่องนี้แบบเข้าใจง่าย', 'ช่วยร่างอีเมลตอบกลับให้หน่อย'];
+
+  useEffect(() => {
+    const raw = sessionStorage.getItem('ocr-handoff');
+    if (!raw) return;
+    sessionStorage.removeItem('ocr-handoff');
+    try {
+      const handoff = JSON.parse(raw);
+      if (handoff?.ocrText) {
+        setAttachments([{ id: `ocr-${Date.now()}`, name: handoff.name || 'ocr-result.txt', type: 'text/markdown', size: handoff.ocrText.length, ocrStatus: 'readable', ocrOk: true, ocrText: handoff.ocrText }]);
+        setInput('ช่วยสรุปข้อความ OCR นี้ให้หน่อย');
+      }
+    } catch {}
+  }, []);
 
   async function uploadKnowledgeFiles(fileList) {
     const files = Array.from(fileList || []).filter((file) => file && file.size > 0);
@@ -943,7 +1129,7 @@ function App() {
   useEffect(() => {
     fetch('/api/config').then((res) => res.json()).then((data) => setConfig({ ...defaultConfig, ...data })).catch(() => setConfig(defaultConfig));
   }, []);
-  const page = path === '/knowledge-chat' ? <KnowledgeChatPage /> : path === '/admin' ? <DocumentLibraryPage /> : <TicketIntakePage config={config} />;
+  const page = path === '/knowledge-chat' ? <KnowledgeChatPage /> : path === '/ocr' ? <OcrStudioPage /> : path === '/admin' ? <DocumentLibraryPage /> : <TicketIntakePage config={config} />;
   return <AppShell config={config} path={path} navigate={navigate}>{page}</AppShell>;
 }
 
