@@ -22,6 +22,14 @@ Open:
 http://127.0.0.1:3000
 ```
 
+Admin document library:
+
+```text
+http://127.0.0.1:3000/admin
+```
+
+The admin page is protected by `ADMIN_AUTH` and is not shown in the general user navigation.
+
 ## Notes
 
 - The model files are not stored in git because they are several GB.

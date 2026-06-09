@@ -519,11 +519,11 @@ async function saveTicket(ticket, sourceMessage, agentReply, transcript = []) {
 }
 
 app.get('/admin', requireAdmin, (_req, res) => {
-  res.sendFile(path.join(process.cwd(), 'public', 'admin.html'));
+  res.sendFile(path.join(staticDir, 'index.html'));
 });
 
 app.get('/knowledge-chat', (_req, res) => {
-  res.sendFile(path.join(process.cwd(), 'public', 'knowledge-chat.html'));
+  res.sendFile(path.join(staticDir, 'index.html'));
 });
 
 app.get('/api/admin/knowledge', requireAdmin, async (_req, res) => {

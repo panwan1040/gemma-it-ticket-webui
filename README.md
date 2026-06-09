@@ -11,8 +11,8 @@ The app helps internal support teams collect issue details, draft a work order, 
 - Work order draft with editable fields
 - Local ticket log at `data/tickets.jsonl`
 - Optional Google Sheets webhook
-- Document Library admin page at `/admin`
 - Knowledge chat page at `/knowledge-chat`
+- Protected Document Library admin page at `/admin`
 - Optional Typhoon OCR worker for PDF/image ingestion
 - Local RAG over Markdown files in `knowledge/`
 - Open-source friendly app branding through `.env`
@@ -60,10 +60,12 @@ http://127.0.0.1:3000
 Useful pages:
 
 ```text
-http://127.0.0.1:3000             IT ticket intake
-http://127.0.0.1:3000/knowledge-chat
-http://127.0.0.1:3000/admin
+http://127.0.0.1:3000             IT ticket intake for general users
+http://127.0.0.1:3000/knowledge-chat  Knowledge chat for general users
+http://127.0.0.1:3000/admin       Protected admin document library
 ```
+
+The general user navigation only shows the ticket intake and knowledge chat pages. Admins open `/admin` directly.
 
 Default admin auth comes from `.env`:
 
@@ -175,7 +177,7 @@ Markdown knowledge files live in:
 knowledge/
 ```
 
-Admin page:
+Admin page, protected by `ADMIN_AUTH` and intentionally hidden from the general user menu:
 
 ```text
 http://127.0.0.1:3000/admin

@@ -18,6 +18,8 @@ npm run setup:windows
 npm run local:windows
 ```
 
+Open the app at `http://127.0.0.1:3000`. The general user menu shows ticket intake and knowledge chat only. Admins open the protected document library directly at `http://127.0.0.1:3000/admin`.
+
 ## Portable launcher
 
 ```powershell
