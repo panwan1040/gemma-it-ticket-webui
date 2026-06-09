@@ -2,37 +2,39 @@ import 'dotenv/config';
 import express from 'express';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { createWorker } from 'tesseract.js';
 
 const app = express();
 const port = Number(process.env.PORT || 3000);
 const llmBaseUrl = process.env.LLM_BASE_URL || 'http://127.0.0.1:18080/v1';
-const llmModel = process.env.LLM_MODEL || 'gemma4-e4b-qat';
+let llmModel = process.env.LLM_MODEL || 'gemma4-e4b-qat';
 const sheetWebhookUrl = process.env.GOOGLE_SHEET_WEBHOOK_URL || '';
 const localLogPath = path.join(process.cwd(), 'data', 'tickets.jsonl');
+const ragIndexPath = path.join(process.cwd(), 'data', 'rag-index.json');
+const staticDir = path.join(process.cwd(), 'dist');
+const knowledgeDir = path.join(process.cwd(), 'knowledge');
+const adminAuth = process.env.ADMIN_AUTH || 'admin:icetong';
+let ocrWorkerPromise = null;
+
 
 app.use(express.json({ limit: '2mb' }));
-const staticDir = path.join(process.cwd(), 'dist');
-
 app.use(express.static(staticDir));
 app.use(express.static('public'));
 
-const systemPrompt = `You are a senior Thai IT support triage agent for an internal helpdesk.
-You help collect incident details through a multi-turn chat and create a useful ticket for the next support team.
-Reply in Thai only. Do not include markdown, code fences, hidden reasoning, or explanations outside JSON.
+const systemPrompt = `You are a senior Thai IT Support Admin for an internal helpdesk.
+You are the first-line intake agent for every IT-related issue users may report, including printers, computers, network, Wi-Fi, email, software, accounts, access control, CCTV/NVR, and vendor-supported systems.
+You help collect incident details through a multi-turn chat and create a useful ticket for the correct support team.
+Reply in Thai only. Use polite Thai ending "ครับ". Do not include markdown, code fences, hidden reasoning, or explanations outside JSON.
+
+You may receive Relevant Knowledge from SOPs, assets, or previous incidents. Use it only when relevant to the reported category. Do not force CCTV knowledge onto printer/computer/network issues. Do not invent facts. If knowledge suggests possible causes, phrase them as possibilities.
 
 Style:
-- Warm, concise, professional. Use polite Thai ending "ครับ", not "ค่ะ/คะ".
-- Ask smart follow-up questions, not a generic checklist every time.
-- Ask at most 3 questions per reply unless the user explicitly asks for a checklist.
-- Prioritize questions that change urgency, routing, or first action.
-- If the user already gave enough information, stop asking and say the ticket is ready to save.
-
-Your job:
-1. Continue the chat naturally and ask only for the most important missing information.
-2. Maintain a detailed structured ticket from all conversation context.
-3. Infer impact, urgency, and responsible team conservatively.
-4. Tell whether the ticket has enough information to save.
-5. If ready, briefly summarize what will be saved and ask whether the user wants to add anything else.
+- Clean, concise, professional.
+- Accept and triage the reported issue category directly; never say you only support CCTV/NVR.
+- Ask smart follow-up questions, not generic checklists.
+- Ask at most 3 questions per reply.
+- Prioritize questions that change urgency, routing, asset identification, or first action.
+- If enough information exists, stop asking and say the ticket is ready to save.
 
 Return exactly one JSON object:
 {
@@ -42,46 +44,206 @@ Return exactly one JSON object:
   "ticket": {
     "ประเภท": "CCTV/NVR | Network | Computer | Printer | Access Control | Software | Other",
     "ปัญหา": "specific problem summary with affected asset/location if known",
-    "ผลกระทบ": "specific business/security/user impact, not vague if inferable",
-    "ข้อมูลที่ได้รับ": "bullet-like Thai summary in one string: asset/location, symptom, affected users/devices, start time, evidence/error, workaround/status",
+    "ผลกระทบ": "specific business/security/user impact",
+    "ข้อมูลที่ได้รับ": "detailed Thai summary: asset/location, symptom, affected users/devices, start time, evidence/error, useful knowledge hints, workaround/status",
     "ระดับความเร่งด่วน": "Low | Medium | High | Critical",
     "ทีมที่เกี่ยวข้อง": "IT Support | Network | Security | Vendor | Facilities | Other"
   }
 }
 
-Good ticket detail rules:
-- ปัญหา should be concise but specific, e.g. "กล้อง CAM-WH-01 หน้าโกดังดูไม่ได้ทุกเครื่อง".
-- ผลกระทบ should explain operational consequence, e.g. "รปภ. ไม่สามารถตรวจสอบพื้นที่หน้าโกดังจากระบบ CCTV ได้".
-- ข้อมูลที่ได้รับ should preserve all useful facts, including unknowns as "ยังไม่ทราบ" only for important missing facts.
-- Do not invent camera names, exact times, error messages, or affected users.
-- If a field is unknown but not essential, infer a reasonable summary and keep missingFields short.
-
-CCTV/NVR triage priorities:
-- Ask camera name/ID or exact location if missing.
-- Ask whether it fails for everyone/all devices or only one viewer if missing.
-- Ask symptom: black screen, no signal, offline, image frozen, login/playback issue, or app cannot connect.
-- Ask start time/recent change if missing.
-- Ask for screenshot/error only if symptom is unclear.
-- If all cameras fail, route may be Network or Vendor and urgency likely High/Critical.
-- If one critical-area camera fails and security monitoring is affected, urgency is usually Medium or High depending coverage.
-
-Other routing hints:
-- Network: internet/Wi-Fi/VPN/switch/connectivity across users or devices.
-- Vendor: hardware failure, NVR/camera replacement, warranty, or external provider required.
-- For CCTV/NVR incidents, default ทีมที่เกี่ยวข้อง to "IT Support" for first response unless the user clearly says the security operations team must own it. Mention security impact in ผลกระทบ instead.
-- Security: physical security/access control operations when the task is operational monitoring, policy, or guard team action rather than technical troubleshooting.
-- Facilities: power, physical obstruction, cable/power adapter, environment.
+Category triage priorities:
+- Printer: ask printer name/location, symptom/error, affected users/devices, and whether other printers work. Team is usually IT Support or Vendor if hardware/service required.
+- Computer: ask device/user, symptom, OS/app involved, start time, and impact. Team is usually IT Support.
+- Network/Wi-Fi/VPN: ask location/network name, affected scope, start time, and whether internet/internal systems are affected. Team is usually Network.
+- Software/Email/Account: ask app/system, account/user, error message, affected scope, and urgency. Team is usually IT Support or application owner.
+- Access Control: ask door/device/location, symptom, affected users, and security impact. Team is usually IT Support/Security/Vendor.
+- CCTV/NVR: ask camera name/ID or exact location, affected viewers/devices, symptom, start time, and screenshot/error if useful. For CCTV/NVR, default team is IT Support for first response; mention security impact in ผลกระทบ.
 
 Readiness rules:
-- Ready when there is enough information for support to take first action: category, affected asset/location, symptom, impact, and rough scope or urgency.
-- Not ready if the problem is too vague to identify asset/location or symptom.
-- Do not block saving just because screenshot or exact start time is missing; list it as optional missing info.
+- Ready when support can take first action: category, affected asset/location, symptom, impact, and rough scope/urgency.
+- Do not block saving because screenshot or exact start time is missing; list it as optional missing info.
 
 Urgency rules:
-- Critical: safety risk, site-wide outage, business stopped, multiple critical cameras/security blind spot, NVR down for entire site.
-- High: multiple users/areas affected, important service unavailable, critical-area camera down with no workaround.
-- Medium: one camera/area/device affected, monitoring degraded but business can continue.
-- Low: minor issue, request, cosmetic issue, intermittent issue with workaround.`;
+- Critical: safety risk, site-wide outage, business stopped, NVR/all critical cameras down.
+- High: multiple users/areas affected, critical-area camera down with no workaround.
+- Medium: one camera/area/device affected, monitoring degraded but work continues.
+- Low: minor issue, request, intermittent issue with workaround.`;
+
+function tokenize(text) {
+  return text.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((token) => token.length >= 2);
+}
+
+function requireAdmin(req, res, next) {
+  const header = req.headers.authorization || '';
+  const expected = `Basic ${Buffer.from(adminAuth).toString('base64')}`;
+  if (header !== expected) {
+    res.setHeader('WWW-Authenticate', 'Basic realm="Gemma Knowledge Admin"');
+    res.status(401).json({ error: 'admin authentication required' });
+    return;
+  }
+  next();
+}
+
+async function getOcrWorker() {
+  if (!ocrWorkerPromise) {
+    ocrWorkerPromise = createWorker('eng');
+  }
+  return ocrWorkerPromise;
+}
+
+function parseDataUrl(dataUrl) {
+  const match = String(dataUrl || '').match(/^data:([^;]+);base64,(.+)$/);
+  if (!match) throw new Error('image must be a base64 data URL');
+  const mimeType = match[1];
+  if (!['image/png', 'image/jpeg', 'image/jpg', 'image/webp'].includes(mimeType)) throw new Error('OCR supports PNG, JPEG, or WebP images');
+  const buffer = Buffer.from(match[2], 'base64');
+  if (buffer.length > 8 * 1024 * 1024) throw new Error('image is too large; max 8MB');
+  return { mimeType, buffer };
+}
+
+async function ocrImage(dataUrl) {
+  const { buffer, mimeType } = parseDataUrl(dataUrl);
+  const worker = await getOcrWorker();
+  try {
+    const result = await worker.recognize(buffer);
+    const text = String(result.data?.text || '').trim();
+    const confidence = Number(result.data?.confidence || 0);
+    return { text, confidence, mimeType };
+  } catch (error) {
+    ocrWorkerPromise = null;
+    throw new Error(`OCR failed: ${error.message || error}`);
+  }
+}
+
+function slugifyFileName(name) {
+  const base = String(name || 'upload')
+    .replace(/\.[^.]+$/, '')
+    .replace(/[^\p{L}\p{N}]+/gu, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 80) || 'upload';
+  return base;
+}
+
+function uploadToMarkdown(file) {
+  const name = String(file.name || 'upload');
+  const type = String(file.type || 'text/plain');
+  const content = String(file.content || '');
+  const slug = slugifyFileName(name);
+  const ext = name.split('.').pop()?.toLowerCase() || 'txt';
+  const now = new Date().toISOString();
+
+  if (ext === 'md' || ext === 'markdown') {
+    return { path: `Uploads/${slug}.md`, content };
+  }
+
+  if (ext === 'txt' || type.startsWith('text/')) {
+    return {
+      path: `Uploads/${slug}.md`,
+      content: `# ${slug.replaceAll('-', ' ')}\n\nSource file: ${name}\nUploaded at: ${now}\n\n${content}`
+    };
+  }
+
+  return {
+    path: `Uploads/${slug}.md`,
+    content: `# ${slug.replaceAll('-', ' ')}\n\nSource file: ${name}\nUploaded at: ${now}\nFile type: ${type || ext}\n\nไฟล์ชนิดนี้ถูกอัปโหลดแล้ว แต่ระบบยังไม่ได้แปลงเนื้อหาอัตโนมัติ กรุณาสรุปหรือวางเนื้อหาสำคัญลงใน note นี้เพื่อใช้เป็น knowledge สำหรับ RAG\n`
+  };
+}
+
+function safeKnowledgePath(relativePath) {
+  const clean = String(relativePath || '').replace(/^\/+/, '');
+  if (!clean || clean.includes('..') || !clean.endsWith('.md')) {
+    throw new Error('path must be a markdown file inside knowledge/');
+  }
+  const full = path.join(knowledgeDir, clean);
+  const normalizedRoot = path.resolve(knowledgeDir);
+  const normalizedFull = path.resolve(full);
+  if (!normalizedFull.startsWith(normalizedRoot + path.sep)) {
+    throw new Error('invalid knowledge path');
+  }
+  return { clean, full };
+}
+
+async function walkMarkdown(dir) {
+  const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
+  const files = [];
+  for (const entry of entries) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) files.push(...await walkMarkdown(full));
+    if (entry.isFile() && entry.name.endsWith('.md')) files.push(full);
+  }
+  return files;
+}
+
+async function rebuildKnowledgeIndex() {
+  const files = await walkMarkdown(knowledgeDir);
+  const docs = [];
+  for (const file of files) {
+    const content = await fs.readFile(file, 'utf8');
+    const title = content.match(/^#\s+(.+)$/m)?.[1] || path.basename(file, '.md');
+    docs.push({
+      path: path.relative(process.cwd(), file),
+      title,
+      content,
+      tokens: [...new Set(tokenize(`${title}\n${content}`))]
+    });
+  }
+  await fs.mkdir(path.dirname(ragIndexPath), { recursive: true });
+  await fs.writeFile(ragIndexPath, JSON.stringify({ generatedAt: new Date().toISOString(), docs }, null, 2));
+  return { generatedAt: new Date().toISOString(), count: docs.length };
+}
+
+async function loadRagIndex() {
+  try {
+    return JSON.parse(await fs.readFile(ragIndexPath, 'utf8'));
+  } catch {
+    return { docs: [] };
+  }
+}
+
+function inferCategory(text) {
+  if (/ปริ้น|ปริน|printer|พิมพ์|เครื่องพิมพ์/i.test(text)) return 'Printer';
+  if (/กล้อง|cctv|nvr|dvr|โกดัง|warehouse|no signal|offline/i.test(text)) return 'CCTV/NVR';
+  if (/wifi|wi-fi|network|internet|vpn|เน็ต|ไวไฟ|lan/i.test(text)) return 'Network';
+  if (/คอม|notebook|pc|windows|mac|เครื่องช้า|เปิดไม่ติด/i.test(text)) return 'Computer';
+  return 'Other';
+}
+
+function categoryDocBoost(category, doc) {
+  const haystack = `${doc.path} ${doc.title} ${doc.content}`.toLowerCase();
+  if (category === 'Printer') return /printer|ปริ้น|ปริน|เครื่องพิมพ์|พิมพ์/.test(haystack) ? 12 : /cctv|nvr|กล้อง/.test(haystack) ? -8 : 0;
+  if (category === 'CCTV/NVR') return /cctv|nvr|กล้อง|camera/.test(haystack) ? 12 : /printer|เครื่องพิมพ์/.test(haystack) ? -8 : 0;
+  if (category === 'Network') return /network|wifi|wi-fi|vpn|switch|internet|lan/.test(haystack) ? 10 : 0;
+  if (category === 'Computer') return /computer|windows|mac|notebook|pc/.test(haystack) ? 10 : 0;
+  return 0;
+}
+
+async function searchKnowledge(query, limit = 4) {
+  const index = await loadRagIndex();
+  const category = inferCategory(query);
+  const queryTokens = tokenize(query);
+  if (!index.docs?.length) return { count: 0, items: [], context: '' };
+
+  const scored = index.docs
+    .map((doc) => {
+      const docTokens = new Set(doc.tokens || tokenize(`${doc.title}\n${doc.content}`));
+      const lexicalScore = queryTokens.reduce((sum, token) => sum + (docTokens.has(token) ? 3 : (doc.content || '').toLowerCase().includes(token) ? 1 : 0), 0);
+      const score = lexicalScore + categoryDocBoost(category, doc);
+      return { ...doc, score };
+    })
+    .filter((doc) => doc.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit)
+    .map((doc) => ({
+      path: doc.path,
+      title: doc.title,
+      score: doc.score,
+      snippet: (doc.content || '').replace(/\s+/g, ' ').slice(0, 320),
+      content: (doc.content || '').slice(0, 1600)
+    }));
+
+  const context = scored.map((doc, index) => `Knowledge ${index + 1}: ${doc.title}\nPath: ${doc.path}\n${doc.content}`).join('\n\n');
+  return { count: index.docs.length, items: scored.map(({ content, ...doc }) => doc), context };
+}
 
 function normalizeTicket(ticket, fallbackTicket) {
   const source = ticket && typeof ticket === 'object' ? ticket : {};
@@ -97,20 +259,22 @@ function normalizeTicket(ticket, fallbackTicket) {
 
 function fallbackTriage(message, history = []) {
   const allText = [...history.map((item) => item.content), message].join('\n').trim();
-  const isCctv = /กล้อง|cctv|nvr|dvr|โกดัง|warehouse/i.test(allText);
-  const type = isCctv ? 'CCTV/NVR' : 'Other';
-  const impact = isCctv
-    ? 'เจ้าหน้าที่รักษาความปลอดภัยตรวจสอบพื้นที่ไม่ได้'
-    : 'ต้องรอข้อมูลเพิ่มเติมเพื่อประเมินผลกระทบ';
-
+  const isCctv = /กล้อง|cctv|nvr|dvr|โกดัง|warehouse|no signal|offline/i.test(allText);
+  const isPrinter = /ปริ้น|ปริน|printer|พิมพ์|เครื่องพิมพ์/i.test(allText);
+  const category = isCctv ? 'CCTV/NVR' : isPrinter ? 'Printer' : 'Other';
+  const reply = isPrinter
+    ? 'รับทราบครับ รบกวนขอข้อมูลเพิ่ม 3 จุดครับ: 1. ชื่อหรือจุดติดตั้งเครื่องปริ้นเตอร์ 2. อาการหรือ error ที่ขึ้น 3. เป็นทุกเครื่องหรือเฉพาะเครื่องของคุณครับ'
+    : isCctv
+      ? 'รับทราบครับ รบกวนขอข้อมูลเพิ่ม 3 จุดครับ: 1. ชื่อกล้องหรือบริเวณที่มีปัญหา 2. ดูไม่ได้ทุกเครื่องหรือเฉพาะเครื่องคุณ 3. อาการเป็นภาพดำ/no signal/offline/ภาพค้างแบบไหนครับ'
+      : 'รับทราบครับ รบกวนขอข้อมูลเพิ่ม 3 จุดครับ: 1. อุปกรณ์หรือระบบที่มีปัญหา 2. อาการหรือ error ที่พบ 3. กระทบผู้ใช้กี่คนหรือเริ่มเป็นตั้งแต่เมื่อไหร่ครับ';
   return {
-    agentReply: 'ขอข้อมูลเพิ่มครับ\n1. ชื่อกล้องหรือบริเวณที่มีปัญหา\n2. ดูไม่ได้ทุกเครื่องหรือเฉพาะเครื่องคุณ\n3. เริ่มมีปัญหาตั้งแต่เมื่อไหร่\n4. มีรูปหน้าจอ error ไหม',
+    agentReply: reply,
     isReadyToSave: false,
-    missingFields: ['ชื่อกล้อง/บริเวณ', 'ผู้ได้รับผลกระทบ', 'เวลาเริ่มเกิดปัญหา', 'error หรือรูปหน้าจอ'],
+    missingFields: ['ชื่อกล้อง/บริเวณ', 'ขอบเขตผู้ได้รับผลกระทบ', 'อาการที่พบ'],
     ticket: {
-      'ประเภท': type,
+      'ประเภท': category,
       'ปัญหา': allText || 'ยังไม่ได้ระบุปัญหา',
-      'ผลกระทบ': impact,
+      'ผลกระทบ': isCctv ? 'การตรวจสอบพื้นที่ผ่านระบบ CCTV อาจได้รับผลกระทบ' : isPrinter ? 'ผู้ใช้อาจไม่สามารถพิมพ์เอกสารได้ตามปกติ' : 'ต้องรอข้อมูลเพิ่มเติมเพื่อประเมินผลกระทบ',
       'ข้อมูลที่ได้รับ': allText || '-',
       'ระดับความเร่งด่วน': 'Medium',
       'ทีมที่เกี่ยวข้อง': 'IT Support'
@@ -121,7 +285,11 @@ function fallbackTriage(message, history = []) {
 async function callLocalGemma(messages) {
   const history = messages.filter((item) => item.role === 'user' || item.role === 'assistant');
   const latestUser = [...history].reverse().find((item) => item.role === 'user')?.content || '';
+  const conversationText = history.map((item) => `${item.role}: ${item.content}`).join('\n');
+  const rag = await searchKnowledge(conversationText || latestUser);
   const fallback = fallbackTriage(latestUser, history);
+
+  const userInstruction = `${rag.context ? `Relevant Knowledge:\n${rag.context}\n\n` : ''}Conversation so far:\n${conversationText}\n\nอัปเดต ticket จากบริบททั้งหมดด้านบน ตอบกลับเป็น JSON object เท่านั้น`;
 
   const response = await fetch(`${llmBaseUrl}/chat/completions`, {
     method: 'POST',
@@ -129,34 +297,39 @@ async function callLocalGemma(messages) {
     body: JSON.stringify({
       model: llmModel,
       temperature: 0,
-      max_tokens: 650,
+      max_tokens: 720,
       messages: [
         { role: 'system', content: systemPrompt },
-        ...history,
-        { role: 'user', content: 'อัปเดต ticket จากบริบททั้งหมดด้านบน ตอบกลับเป็น JSON object เท่านั้น' }
+        { role: 'user', content: userInstruction }
       ]
     })
   });
 
-  if (!response.ok) {
-    throw new Error(`LLM HTTP ${response.status}`);
-  }
+  if (!response.ok) throw new Error(`LLM HTTP ${response.status}`);
 
   const data = await response.json();
   const content = data.choices?.[0]?.message?.content || '';
   const start = content.indexOf('{');
   const end = content.lastIndexOf('}');
-  if (start === -1 || end === -1 || end <= start) {
-    throw new Error(`LLM returned non-JSON content: ${content.slice(0, 160)}`);
-  }
+  if (start === -1 || end === -1 || end <= start) throw new Error(`LLM returned non-JSON content: ${content.slice(0, 160)}`);
 
   const parsed = JSON.parse(content.slice(start, end + 1));
   return {
     agentReply: parsed.agentReply || fallback.agentReply,
     isReadyToSave: Boolean(parsed.isReadyToSave),
     missingFields: Array.isArray(parsed.missingFields) ? parsed.missingFields : fallback.missingFields,
-    ticket: normalizeTicket(parsed.ticket, fallback.ticket)
+    ticket: normalizeTicket(parsed.ticket, fallback.ticket),
+    ragContext: { count: rag.count, items: rag.items }
   };
+}
+
+async function saveIncidentNote(row) {
+  const safeDate = new Date().toISOString().slice(0, 10);
+  const safeTitle = String(row['ปัญหา'] || 'incident').replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-|-$/g, '').slice(0, 70) || 'incident';
+  const file = path.join(process.cwd(), 'knowledge', 'Incidents', `${safeDate}-${safeTitle}.md`);
+  const note = `# ${row['ปัญหา'] || 'Incident'}\n\nประเภท: ${row['ประเภท'] || ''}\nระดับความเร่งด่วน: ${row['ระดับความเร่งด่วน'] || ''}\nทีมที่เกี่ยวข้อง: ${row['ทีมที่เกี่ยวข้อง'] || ''}\n\n## ผลกระทบ\n${row['ผลกระทบ'] || ''}\n\n## ข้อมูลที่ได้รับ\n${row['ข้อมูลที่ได้รับ'] || ''}\n\n## Transcript\n${row.transcript || ''}\n`;
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  await fs.writeFile(file, note, 'utf8');
 }
 
 async function saveTicket(ticket, sourceMessage, agentReply, transcript = []) {
@@ -170,6 +343,7 @@ async function saveTicket(ticket, sourceMessage, agentReply, transcript = []) {
 
   await fs.mkdir(path.dirname(localLogPath), { recursive: true });
   await fs.appendFile(localLogPath, `${JSON.stringify(row)}\n`, 'utf8');
+  await saveIncidentNote(row).catch(() => {});
 
   if (sheetWebhookUrl) {
     const response = await fetch(sheetWebhookUrl, {
@@ -186,8 +360,161 @@ async function saveTicket(ticket, sourceMessage, agentReply, transcript = []) {
   return row;
 }
 
+app.get('/admin', requireAdmin, (_req, res) => {
+  res.sendFile(path.join(process.cwd(), 'public', 'admin.html'));
+});
+
+app.get('/api/admin/knowledge', requireAdmin, async (_req, res) => {
+  const files = await walkMarkdown(knowledgeDir);
+  const notes = [];
+  for (const file of files) {
+    const content = await fs.readFile(file, 'utf8');
+    notes.push({
+      path: path.relative(knowledgeDir, file),
+      title: content.match(/^#\s+(.+)$/m)?.[1] || path.basename(file, '.md'),
+      size: Buffer.byteLength(content),
+      updatedAt: (await fs.stat(file)).mtime.toISOString()
+    });
+  }
+  notes.sort((a, b) => a.path.localeCompare(b.path));
+  res.json({ ok: true, notes });
+});
+
+app.get('/api/admin/knowledge/file', requireAdmin, async (req, res) => {
+  try {
+    const { clean, full } = safeKnowledgePath(req.query.path);
+    const content = await fs.readFile(full, 'utf8');
+    res.json({ ok: true, path: clean, content });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.post('/api/admin/knowledge/file', requireAdmin, async (req, res) => {
+  try {
+    const { clean, full } = safeKnowledgePath(req.body?.path);
+    const content = String(req.body?.content || '');
+    await fs.mkdir(path.dirname(full), { recursive: true });
+    await fs.writeFile(full, content, 'utf8');
+    const index = await rebuildKnowledgeIndex();
+    res.json({ ok: true, path: clean, index });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.post('/api/admin/knowledge/upload', requireAdmin, async (req, res) => {
+  try {
+    const files = Array.isArray(req.body?.files) ? req.body.files : [];
+    if (!files.length) {
+      res.status(400).json({ error: 'files are required' });
+      return;
+    }
+
+    const saved = [];
+    for (const file of files.slice(0, 20)) {
+      const note = uploadToMarkdown(file);
+      const { clean, full } = safeKnowledgePath(note.path);
+      await fs.mkdir(path.dirname(full), { recursive: true });
+      await fs.writeFile(full, note.content, 'utf8');
+      saved.push(clean);
+    }
+
+    const index = await rebuildKnowledgeIndex();
+    res.json({ ok: true, saved, index });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.delete('/api/admin/knowledge/file', requireAdmin, async (req, res) => {
+  try {
+    const { clean, full } = safeKnowledgePath(req.body?.path);
+    await fs.unlink(full);
+    const index = await rebuildKnowledgeIndex();
+    res.json({ ok: true, path: clean, index });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.post('/api/admin/knowledge/reindex', requireAdmin, async (_req, res) => {
+  try {
+    res.json({ ok: true, index: await rebuildKnowledgeIndex() });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/models', async (_req, res) => {
+  const candidates = [
+    {
+      id: 'gemma4-e4b-qat',
+      label: 'Gemma 4 E4B QAT',
+      size: '5.15GB',
+      context: '8K recommended',
+      localPath: 'models/gemma-4-e4b-qat/gemma-4-E4B_q4_0-it.gguf',
+      startCommand: 'MODEL_SIZE=e4b CTX_SIZE=8192 HOST=0.0.0.0 LLM_PORT=18080 scripts/start_model.sh'
+    },
+    {
+      id: 'gemma4-12b-qat',
+      label: 'Gemma 4 12B QAT',
+      size: '6.98GB',
+      context: '16K optional, 8K safer',
+      localPath: 'models/gemma-4-12b-qat/gemma-4-12b-it-qat-q4_0.gguf',
+      startCommand: 'MODEL_SIZE=12b CTX_SIZE=8192 HOST=0.0.0.0 LLM_PORT=18080 scripts/start_model.sh'
+    }
+  ];
+
+  const models = [];
+  for (const model of candidates) {
+    const exists = await fs.access(path.join(process.cwd(), model.localPath)).then(() => true).catch(() => false);
+    models.push({ ...model, exists, selected: model.id === llmModel });
+  }
+
+  let serverModels = [];
+  try {
+    const response = await fetch(`${llmBaseUrl}/models`);
+    const data = await response.json();
+    serverModels = data.data || data.models || [];
+  } catch {}
+
+  res.json({ ok: true, selected: llmModel, models, serverModels });
+});
+
+app.post('/api/models/select', async (req, res) => {
+  const model = String(req.body?.model || '').trim();
+  const allowed = ['gemma4-e4b-qat', 'gemma4-12b-qat'];
+  if (!allowed.includes(model)) {
+    res.status(400).json({ error: 'unknown model' });
+    return;
+  }
+  llmModel = model;
+  res.json({ ok: true, selected: llmModel, note: 'Model alias updated for API calls. If llama-server is running a different model, restart it with the matching start command.' });
+});
+
+app.post('/api/ocr', async (req, res) => {
+  try {
+    const image = String(req.body?.image || '');
+    const name = String(req.body?.name || 'screenshot');
+    if (!image) {
+      res.status(400).json({ error: 'image is required' });
+      return;
+    }
+    const result = await ocrImage(image);
+    res.json({ ok: true, name, ...result });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, llmBaseUrl, llmModel, sheetEnabled: Boolean(sheetWebhookUrl) });
+});
+
+app.get('/api/rag/search', async (req, res) => {
+  const q = String(req.query.q || '');
+  res.json(await searchKnowledge(q));
 });
 
 app.post('/api/chat', async (req, res) => {
@@ -204,35 +531,13 @@ app.post('/api/chat', async (req, res) => {
 
   let result;
   let mode = 'local-gemma';
-
   try {
     result = await callLocalGemma(cleanMessages);
-  } catch (error) {
+  } catch {
     mode = 'fallback-rules';
     const latestUser = [...cleanMessages].reverse().find((item) => item.role === 'user')?.content || '';
-    result = fallbackTriage(latestUser, cleanMessages);
+    result = { ...fallbackTriage(latestUser, cleanMessages), ragContext: await searchKnowledge(latestUser) };
   }
-
-  res.json({ mode, ...result });
-});
-
-app.post('/api/triage', async (req, res) => {
-  const message = String(req.body?.message || '').trim();
-  if (!message) {
-    res.status(400).json({ error: 'message is required' });
-    return;
-  }
-
-  let result;
-  let mode = 'local-gemma';
-
-  try {
-    result = await callLocalGemma([{ role: 'user', content: message }]);
-  } catch (error) {
-    mode = 'fallback-rules';
-    result = fallbackTriage(message);
-  }
-
   res.json({ mode, ...result });
 });
 

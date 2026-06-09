@@ -3,21 +3,19 @@ export default {
   theme: {
     extend: {
       fontFamily: {
-        display: ['"Instrument Serif"', 'Georgia', 'serif'],
-        sans: ['"Manrope"', '"Avenir Next"', 'Sukhumvit Set', 'sans-serif']
+        sans: ['Inter', 'Geist', 'ui-sans-serif', 'system-ui', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'sans-serif']
       },
       colors: {
-        obsidian: '#101714',
-        pine: '#183f32',
-        moss: '#7da17b',
-        brass: '#d6a04f',
-        cream: '#fff4df',
-        porcelain: '#f5f0e8',
-        signal: '#78f0b1'
+        brand: {
+          50: '#eef2ff',
+          100: '#e0e7ff',
+          500: '#6366f1',
+          600: '#4f46e5',
+          700: '#4338ca'
+        }
       },
       boxShadow: {
-        premium: '0 30px 100px rgba(16, 23, 20, 0.25)',
-        glow: '0 0 60px rgba(120, 240, 177, 0.28)'
+        soft: '0 1px 2px rgba(15, 23, 42, 0.04), 0 10px 30px rgba(15, 23, 42, 0.05)'
       }
     }
   },

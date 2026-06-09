@@ -8,3 +8,6 @@ models/
 vendor/
 CMakeFiles/
 build/
+
+# OCR runtime cache
+*.traineddata

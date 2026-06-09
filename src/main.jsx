@@ -1,235 +1,291 @@
-import React, { Suspense, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { Canvas, useFrame } from '@react-three/fiber';
-import { Float, Line, MeshTransmissionMaterial, OrbitControls, Sparkles } from '@react-three/drei';
 import { AnimatePresence, motion } from 'framer-motion';
-import { AlertTriangle, Bot, CheckCircle2, DatabaseZap, Loader2, Radar, RefreshCcw, Send, ShieldCheck, Sparkle, User, WifiOff } from 'lucide-react';
+import {
+  BookOpen,
+  Bot,
+  CheckCircle2,
+  ChevronRight,
+  DatabaseZap,
+  FileText,
+  Loader2,
+  MessageSquare,
+  Plus,
+  RefreshCcw,
+  Save,
+  Search,
+  ImagePlus,
+  Send,
+  Sparkles,
+  User,
+  WifiOff
+} from 'lucide-react';
 import './styles.css';
-import { designSystem, fieldLabels } from './lib/design';
 
 const urgencyOptions = ['Low', 'Medium', 'High', 'Critical'];
+const fieldLabels = ['ประเภท', 'ปัญหา', 'ผลกระทบ', 'ข้อมูลที่ได้รับ', 'ระดับความเร่งด่วน', 'ทีมที่เกี่ยวข้อง'];
 const emptyTicket = {
-  'ประเภท': '',
-  'ปัญหา': '',
-  'ผลกระทบ': '',
-  'ข้อมูลที่ได้รับ': '',
-  'ระดับความเร่งด่วน': 'Medium',
-  'ทีมที่เกี่ยวข้อง': ''
+  ประเภท: '',
+  ปัญหา: '',
+  ผลกระทบ: '',
+  ข้อมูลที่ได้รับ: '',
+  ระดับความเร่งด่วน: 'Medium',
+  ทีมที่เกี่ยวข้อง: ''
 };
 
-function IncidentCore() {
-  const group = useRef();
-  const ring = useRef();
-  const nodes = useMemo(() => [
-    [-1.9, 0.35, 0],
-    [-0.9, 1.25, -0.7],
-    [0.35, 0.35, 0.5],
-    [1.45, 1.1, -0.15],
-    [2.05, -0.15, 0.25]
-  ], []);
+function cn(...classes) {
+  return classes.filter(Boolean).join(' ');
+}
 
-  useFrame((state) => {
-    const t = state.clock.getElapsedTime();
-    group.current.rotation.y = Math.sin(t * 0.22) * 0.28;
-    group.current.rotation.x = Math.cos(t * 0.18) * 0.08;
-    ring.current.rotation.z = t * 0.14;
-  });
+function Button({ children, variant = 'primary', className = '', ...props }) {
+  const variants = {
+    primary: 'bg-zinc-950 text-white hover:bg-zinc-800 disabled:bg-zinc-300',
+    secondary: 'border border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50',
+    ghost: 'text-zinc-500 hover:bg-zinc-100 hover:text-zinc-950'
+  };
 
   return (
-    <group ref={group}>
-      <Float speed={1.25} rotationIntensity={0.55} floatIntensity={0.7}>
-        <mesh position={[0, 0.35, 0]}>
-          <icosahedronGeometry args={[1.05, 1]} />
-          <MeshTransmissionMaterial
-            transmission={0.72}
-            thickness={0.35}
-            roughness={0.22}
-            chromaticAberration={0.04}
-            color="#c9f7da"
-          />
-        </mesh>
-      </Float>
-      <mesh ref={ring} position={[0, 0.35, 0]}>
-        <torusGeometry args={[1.55, 0.012, 16, 128]} />
-        <meshStandardMaterial color="#78f0b1" emissive="#2f6f4e" emissiveIntensity={1.4} />
-      </mesh>
-      {nodes.map((point, index) => (
-        <Float key={index} speed={1 + index * 0.08} floatIntensity={0.35}>
-          <mesh position={point}>
-            <sphereGeometry args={[0.08, 24, 24]} />
-            <meshStandardMaterial color={index === 2 ? '#d6a04f' : '#78f0b1'} emissive={index === 2 ? '#d6a04f' : '#78f0b1'} emissiveIntensity={1.1} />
-          </mesh>
-        </Float>
-      ))}
-      <Line points={nodes} color="#9af7c1" lineWidth={1.2} transparent opacity={0.48} />
-      <Sparkles count={55} scale={[5.2, 2.8, 2.5]} size={2.2} speed={0.25} color="#fff4df" />
-    </group>
+    <motion.button
+      whileTap={{ scale: 0.98 }}
+      className={cn('inline-flex items-center justify-center gap-2 rounded-xl px-3.5 py-2.5 text-sm font-medium transition focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-2', variants[variant], className)}
+      {...props}
+    >
+      {children}
+    </motion.button>
   );
 }
 
-function Hero3D() {
-  return (
-    <div className="hero-stage">
-      <Canvas camera={{ position: [0, 0.5, 5.4], fov: 38 }} dpr={[1, 1.6]}>
-        <color attach="background" args={['#101714']} />
-        <ambientLight intensity={0.7} />
-        <directionalLight position={[3, 5, 4]} intensity={2.2} color="#fff4df" />
-        <pointLight position={[-3, 0.5, 2]} intensity={5} color="#78f0b1" />
-        <Suspense fallback={null}>
-          <IncidentCore />
-        </Suspense>
-        <OrbitControls enableZoom={false} enablePan={false} autoRotate autoRotateSpeed={0.35} />
-      </Canvas>
-      <div className="hero-overlay" />
-    </div>
-  );
+function Pill({ children, tone = 'neutral', icon: Icon }) {
+  const tones = {
+    neutral: 'border-zinc-200 bg-white text-zinc-600',
+    active: 'border-brand-100 bg-brand-50 text-brand-700',
+    ok: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+    warn: 'border-amber-200 bg-amber-50 text-amber-700'
+  };
+  return <span className={cn('inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium', tones[tone])}>{Icon ? <Icon size={13} /> : null}{children}</span>;
 }
 
-function StatusPill({ icon: Icon, label, tone = 'neutral' }) {
+function Sidebar({ resetChat, mode, knowledgeCount, models = [], selectedModel, selectModel }) {
   return (
-    <span className={`status-pill ${tone}`}>
-      <Icon size={14} />
-      {label}
-    </span>
+    <aside className="hidden w-72 shrink-0 border-r border-zinc-200 bg-white p-4 lg:flex lg:flex-col">
+      <div className="flex items-center gap-3 px-2 py-2">
+        <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-zinc-950 text-white"><Sparkles size={17} /></div>
+        <div>
+          <div className="text-sm font-semibold text-zinc-950">Gemma Desk</div>
+          <div className="text-xs text-zinc-500">Local AI ticket triage</div>
+        </div>
+      </div>
+
+      <Button className="mt-5 w-full" onClick={resetChat}><Plus size={16} /> New ticket chat</Button>
+
+      <nav className="mt-5 space-y-1">
+        <div className="flex items-center gap-3 rounded-xl bg-zinc-100 px-3 py-2.5 text-sm font-medium text-zinc-950">
+          <MessageSquare size={16} /> Chat intake
+        </div>
+        <div className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm text-zinc-500">
+          <FileText size={16} /> Ticket draft
+        </div>
+        <div className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm text-zinc-500">
+          <BookOpen size={16} /> Knowledge vault
+        </div>
+      </nav>
+
+      <div className="mt-auto rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-medium uppercase tracking-[0.16em] text-zinc-400">Runtime</span>
+          <Pill tone={mode === 'local-gemma' ? 'ok' : mode === 'fallback-rules' ? 'warn' : 'neutral'} icon={mode === 'fallback-rules' ? WifiOff : CheckCircle2}>{mode}</Pill>
+        </div>
+
+        <label className="mt-4 block">
+          <span className="mb-1.5 block text-xs font-medium text-zinc-500">Model</span>
+          <select
+            className="w-full rounded-xl border border-zinc-200 bg-white px-3 py-2.5 text-sm text-zinc-900 outline-none"
+            value={selectedModel || ''}
+            onChange={(event) => selectModel(event.target.value)}
+          >
+            {models.map((model) => (
+              <option key={model.id} value={model.id}>
+                {model.exists ? '●' : '○'} {model.label}
+              </option>
+            ))}
+          </select>
+          <p className="mt-2 text-xs leading-5 text-zinc-500">ถ้าเลือกคนละโมเดลกับที่ llama-server เปิดอยู่ ให้ restart ด้วย command ของโมเดลนั้น</p>
+        </label>
+
+        <div className="mt-4 space-y-2">
+          {models.filter((model) => model.id === selectedModel).map((model) => (
+            <div key={model.id} className="rounded-xl bg-white p-3 text-xs shadow-sm">
+              <div className="font-semibold text-zinc-950">{model.size} · {model.context}</div>
+              <div className="mt-1 break-words text-zinc-500">{model.startCommand}</div>
+            </div>
+          ))}
+        </div>
+
+        <div className="mt-4 rounded-xl bg-white p-3 text-sm shadow-sm">
+          <div className="font-semibold text-zinc-950">{knowledgeCount}</div>
+          <div className="text-xs text-zinc-500">RAG notes</div>
+        </div>
+      </div>
+    </aside>
   );
 }
 
 function ChatBubble({ item }) {
   const isUser = item.role === 'user';
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 12, scale: 0.98 }}
-      animate={{ opacity: 1, y: 0, scale: 1 }}
-      className={`chat-bubble ${isUser ? 'user' : 'assistant'}`}
-    >
-      <div className="bubble-icon">{isUser ? <User size={16} /> : <Bot size={16} />}</div>
-      <p>{item.content}</p>
+    <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className={cn('flex gap-3', isUser ? 'justify-end' : 'justify-start')}>
+      {!isUser && <div className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-brand-50 text-brand-600"><Bot size={16} /></div>}
+      <div className={cn('max-w-[86%] rounded-2xl px-4 py-3 text-sm leading-6 shadow-sm sm:max-w-[74%]', isUser ? 'bg-zinc-950 text-white' : 'border border-zinc-200 bg-white text-zinc-800')}>
+        <p className="whitespace-pre-wrap">{item.content}</p>
+      </div>
+      {isUser && <div className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-zinc-200 text-zinc-600"><User size={16} /></div>}
     </motion.div>
   );
 }
 
-function FieldControl({ label, value, onChange }) {
-  const isLong = ['ผลกระทบ', 'ข้อมูลที่ได้รับ'].includes(label);
-  if (label === 'ระดับความเร่งด่วน') {
-    return (
-      <label className="field-control">
-        <span>{label}</span>
-        <select value={value || 'Medium'} onChange={(event) => onChange(event.target.value)}>
-          {urgencyOptions.map((item) => <option key={item}>{item}</option>)}
-        </select>
-      </label>
-    );
-  }
-
+function ChatPane({ messages, input, setInput, sendMessage, isThinking, resetChat, mode, handleImageFiles, isOcrBusy }) {
   return (
-    <label className="field-control">
-      <span>{label}</span>
-      {isLong ? (
-        <textarea value={value || ''} onChange={(event) => onChange(event.target.value)} />
-      ) : (
-        <input value={value || ''} onChange={(event) => onChange(event.target.value)} />
-      )}
-    </label>
-  );
-}
-
-function TicketDraft({ ticket, setTicket, isReady, missingFields, saveTicket, isSaving, saveStatus }) {
-  const filled = fieldLabels.filter((field) => ticket[field]).length;
-  const completion = Math.round((filled / fieldLabels.length) * 100);
-
-  return (
-    <motion.aside className="glass-panel ticket-panel" initial={{ opacity: 0, x: 24 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.18 }}>
-      <div className="panel-heading">
+    <section className="flex min-h-0 flex-1 flex-col bg-slate-50">
+      <header className="flex h-16 shrink-0 items-center justify-between border-b border-zinc-200 bg-white px-4 sm:px-6">
         <div>
-          <span className="section-kicker">Live draft</span>
-          <h2>Ticket Intelligence</h2>
+          <h1 className="text-base font-semibold text-zinc-950">IT Ticket Chat</h1>
+          <p className="text-xs text-zinc-500">คุยเก็บบริบท แล้วให้ AI สรุป ticket draft</p>
         </div>
-        <StatusPill icon={isReady ? CheckCircle2 : AlertTriangle} label={isReady ? 'พร้อมบันทึก' : 'กำลังเก็บข้อมูล'} tone={isReady ? 'ready' : 'warn'} />
+        <div className="flex items-center gap-2">
+          <Pill tone={mode === 'local-gemma' ? 'ok' : mode === 'fallback-rules' ? 'warn' : 'neutral'}>{mode}</Pill>
+          <Button variant="ghost" className="h-9 w-9 px-0" onClick={resetChat}><RefreshCcw size={16} /></Button>
+        </div>
+      </header>
+
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-6 sm:px-6">
+        <div className="mx-auto max-w-3xl space-y-4">
+          <AnimatePresence>
+            {messages.length ? messages.map((item, index) => <ChatBubble key={`${index}-${item.role}`} item={item} />) : (
+              <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="mx-auto mt-16 max-w-md text-center">
+                <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-white text-brand-600 shadow-sm ring-1 ring-zinc-200"><Bot size={22} /></div>
+                <h2 className="mt-5 text-xl font-semibold tracking-[-0.02em] text-zinc-950">เริ่มจากแจ้งปัญหาสั้นๆ</h2>
+                <p className="mt-2 text-sm leading-6 text-zinc-500">เช่น “กล้องหน้าโกดังดูไม่ได้” แล้ว AI จะถามต่อแบบ support agent ที่รู้บริบทจาก knowledge vault</p>
+              </motion.div>
+            )}
+          </AnimatePresence>
+          {isThinking && <div className="inline-flex items-center gap-2 rounded-full border border-zinc-200 bg-white px-3 py-2 text-xs font-medium text-zinc-500 shadow-sm"><Loader2 className="spin text-brand-600" size={14} /> Gemma กำลังอ่านบริบทและค้น knowledge...</div>}
+        </div>
       </div>
 
-      <div className="completion-card">
-        <div>
-          <strong>{completion}%</strong>
-          <span>field completion</span>
-        </div>
-        <div className="completion-track"><span style={{ width: `${completion}%` }} /></div>
-      </div>
-
-      <div className="field-grid">
-        {fieldLabels.map((label) => (
-          <FieldControl
-            key={label}
-            label={label}
-            value={ticket[label]}
-            onChange={(value) => setTicket((current) => ({ ...current, [label]: value }))}
+      <div className="shrink-0 border-t border-zinc-200 bg-white p-4 sm:p-5">
+        <div className="mx-auto max-w-3xl rounded-2xl border border-zinc-200 bg-white p-3 shadow-soft focus-within:border-brand-500 focus-within:ring-4 focus-within:ring-brand-50">
+          <textarea
+            value={input}
+            onChange={(event) => setInput(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault();
+                sendMessage();
+              }
+            }}
+            className="min-h-24 w-full resize-none border-0 bg-transparent text-sm leading-6 text-zinc-900 outline-none placeholder:text-zinc-400"
+            placeholder="พิมพ์ปัญหา หรือข้อมูลเพิ่มเติม..."
           />
-        ))}
+          <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex gap-2 overflow-x-auto">
+              {['กล้องหน้าโกดังดูไม่ได้', 'ดูไม่ได้ทุกเครื่อง เริ่มเมื่อเช้า', 'ขึ้น no signal'].map((sample) => (
+                <button key={sample} onClick={() => setInput(sample)} className="shrink-0 rounded-full border border-zinc-200 px-3 py-1.5 text-xs text-zinc-500 hover:bg-zinc-50">{sample}</button>
+              ))}
+            </div>
+            <label className="inline-flex cursor-pointer items-center justify-center gap-2 rounded-xl border border-zinc-200 bg-white px-3.5 py-2.5 text-sm font-medium text-zinc-700 transition hover:bg-zinc-50">
+                {isOcrBusy ? <Loader2 className="spin" size={16} /> : <ImagePlus size={16} />} Image
+                <input className="hidden" type="file" accept="image/*" multiple onChange={(event) => handleImageFiles(event.target.files)} />
+              </label>
+              <Button onClick={sendMessage} disabled={!input.trim() || isThinking}>{isThinking ? <Loader2 className="spin" size={16} /> : <Send size={16} />} Send</Button>
+          </div>
+        </div>
       </div>
-
-      <div className="missing-card">
-        <div className="missing-title"><Radar size={15} /> Context gaps</div>
-        <ul>
-          {(missingFields.length ? missingFields : ['ยังไม่มีข้อมูลที่ขาด']).map((item) => <li key={item}>{item}</li>)}
-        </ul>
-      </div>
-
-      <motion.button className="save-button" onClick={saveTicket} disabled={!ticket['ปัญหา'] || isSaving} whileTap={{ scale: 0.98 }}>
-        {isSaving ? <Loader2 className="spin" size={18} /> : <DatabaseZap size={18} />}
-        บันทึกลง Google Sheet
-      </motion.button>
-      <p className="save-status">{saveStatus || 'ตรวจ draft แล้วกดบันทึกเมื่อบริบทครบพอ'}</p>
-    </motion.aside>
+    </section>
   );
 }
 
-function ChatConsole({ messages, input, setInput, sendMessage, isThinking, resetChat, mode }) {
+function TicketPanel({ ticket, setTicket, isReady, missingFields, saveTicket, isSaving, saveStatus, ragContext }) {
+  const completion = Math.round((fieldLabels.filter((field) => ticket[field]).length / fieldLabels.length) * 100);
+  const contextItems = ragContext?.items || [];
+
   return (
-    <motion.section className="glass-panel chat-panel" initial={{ opacity: 0, y: 24 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}>
-      <div className="panel-heading">
-        <div>
-          <span className="section-kicker">Conversation capture</span>
-          <h2>Support Chat</h2>
-        </div>
-        <div className="heading-actions">
-          <StatusPill icon={mode === 'local-gemma' ? Sparkle : WifiOff} label={mode} tone={mode === 'local-gemma' ? 'ready' : 'warn'} />
-          <button className="icon-button" onClick={resetChat} aria-label="เริ่มใหม่"><RefreshCcw size={17} /></button>
+    <aside className="hidden w-[420px] shrink-0 overflow-y-auto border-l border-zinc-200 bg-white xl:block">
+      <div className="sticky top-0 z-10 border-b border-zinc-200 bg-white/95 px-5 py-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-sm font-semibold text-zinc-950">Ticket draft</h2>
+            <p className="text-xs text-zinc-500">ตรวจแก้ก่อนบันทึกได้</p>
+          </div>
+          <Pill tone={isReady ? 'ok' : 'warn'}>{isReady ? 'Ready' : 'Collecting'}</Pill>
         </div>
       </div>
 
-      <div className="chat-stream">
-        <AnimatePresence>
-          {messages.length ? messages.map((item, index) => <ChatBubble key={`${item.role}-${index}-${item.content}`} item={item} />) : (
-            <motion.div className="empty-chat" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-              <ShieldCheck size={34} />
-              <h3>เริ่มจากแจ้งปัญหาสั้นๆ</h3>
-              <p>Agent จะถามต่อเฉพาะจุดที่จำเป็น แล้วเติม Ticket draft ให้อัตโนมัติ</p>
-            </motion.div>
-          )}
-        </AnimatePresence>
-        {isThinking && <div className="thinking"><Loader2 className="spin" size={16} /> Gemma กำลังอ่านบริบท...</div>}
-      </div>
-
-      <div className="composer-card">
-        <textarea
-          value={input}
-          onChange={(event) => setInput(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter' && !event.shiftKey) {
-              event.preventDefault();
-              sendMessage();
-            }
-          }}
-          placeholder="เช่น กล้องหน้าโกดังดูไม่ได้"
-        />
-        <div className="composer-actions">
-          <button className="ghost-button" onClick={() => setInput('กล้องหน้าโกดังดูไม่ได้')}>ใส่ตัวอย่าง</button>
-          <motion.button className="send-button" onClick={sendMessage} disabled={!input.trim() || isThinking} whileTap={{ scale: 0.97 }}>
-            {isThinking ? <Loader2 className="spin" size={18} /> : <Send size={18} />}
-            ส่งข้อความ
-          </motion.button>
+      <div className="space-y-5 p-5">
+        <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-2xl font-semibold text-zinc-950">{completion}%</div>
+              <div className="text-xs text-zinc-500">completion</div>
+            </div>
+            <DatabaseZap className="text-brand-600" size={22} />
+          </div>
+          <div className="mt-4 h-2 overflow-hidden rounded-full bg-zinc-200"><motion.div className="h-full bg-brand-600" animate={{ width: `${completion}%` }} /></div>
         </div>
+
+        <div className="space-y-3">
+          {fieldLabels.map((field) => (
+            <label key={field} className="block">
+              <span className="mb-1.5 block text-xs font-medium text-zinc-500">{field}</span>
+              {field === 'ระดับความเร่งด่วน' ? (
+                <select className="w-full rounded-xl border border-zinc-200 px-3 py-2.5 text-sm outline-none focus:border-brand-500 focus:ring-4 focus:ring-brand-50" value={ticket[field] || 'Medium'} onChange={(event) => setTicket((current) => ({ ...current, [field]: event.target.value }))}>
+                  {urgencyOptions.map((item) => <option key={item}>{item}</option>)}
+                </select>
+              ) : ['ผลกระทบ', 'ข้อมูลที่ได้รับ'].includes(field) ? (
+                <textarea className="min-h-24 w-full resize-y rounded-xl border border-zinc-200 px-3 py-2.5 text-sm leading-6 outline-none focus:border-brand-500 focus:ring-4 focus:ring-brand-50" value={ticket[field] || ''} onChange={(event) => setTicket((current) => ({ ...current, [field]: event.target.value }))} />
+              ) : (
+                <input className="w-full rounded-xl border border-zinc-200 px-3 py-2.5 text-sm outline-none focus:border-brand-500 focus:ring-4 focus:ring-brand-50" value={ticket[field] || ''} onChange={(event) => setTicket((current) => ({ ...current, [field]: event.target.value }))} />
+              )}
+            </label>
+          ))}
+        </div>
+
+        <div className="rounded-2xl border border-zinc-200 p-4">
+          <div className="flex items-center gap-2 text-sm font-semibold text-zinc-950"><Search size={16} className="text-brand-600" /> Knowledge used</div>
+          <div className="mt-3 space-y-2">
+            {contextItems.length ? contextItems.map((item) => (
+              <div key={item.path} className="rounded-xl bg-zinc-50 p-3">
+                <div className="text-xs font-semibold text-zinc-900">{item.title}</div>
+                <div className="mt-1 line-clamp-2 text-xs leading-5 text-zinc-500">{item.snippet}</div>
+              </div>
+            )) : <p className="text-sm text-zinc-500">ยังไม่มี context จาก knowledge vault</p>}
+          </div>
+        </div>
+
+        <div className="rounded-2xl border border-zinc-200 p-4">
+          <div className="text-sm font-semibold text-zinc-950">ยังขาดอะไร</div>
+          <ul className="mt-2 space-y-2 text-sm leading-6 text-zinc-500">
+            {(missingFields.length ? missingFields : ['ครบพอสำหรับบันทึกแล้ว']).map((item) => <li key={item} className="flex gap-2"><ChevronRight className="mt-1 text-zinc-300" size={14} />{item}</li>)}
+          </ul>
+        </div>
+
+        <Button className="w-full" onClick={saveTicket} disabled={!ticket['ปัญหา'] || isSaving}>{isSaving ? <Loader2 className="spin" size={16} /> : <Save size={16} />} บันทึกลง Sheet</Button>
+        <p className="text-center text-sm leading-6 text-zinc-500">{saveStatus || 'กดบันทึกเมื่อข้อมูลครบพอ'}</p>
       </div>
-    </motion.section>
+    </aside>
+  );
+}
+
+function MobileTicketBar({ ticket, saveTicket, isSaving }) {
+  return (
+    <div className="border-t border-zinc-200 bg-white p-3 xl:hidden">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <div className="truncate text-sm font-semibold text-zinc-950">{ticket['ปัญหา'] || 'ยังไม่มี ticket draft'}</div>
+          <div className="text-xs text-zinc-500">{ticket['ประเภท'] || 'รอข้อมูล'}</div>
+        </div>
+        <Button onClick={saveTicket} disabled={!ticket['ปัญหา'] || isSaving}>{isSaving ? <Loader2 className="spin" size={16} /> : <Save size={16} />} Save</Button>
+      </div>
+    </div>
   );
 }
 
@@ -242,8 +298,67 @@ function App() {
   const [isReady, setIsReady] = useState(false);
   const [isThinking, setIsThinking] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [isOcrBusy, setIsOcrBusy] = useState(false);
   const [saveStatus, setSaveStatus] = useState('');
   const [lastAgentReply, setLastAgentReply] = useState('');
+  const [ragContext, setRagContext] = useState({ items: [], count: 0 });
+  const [models, setModels] = useState([]);
+  const [selectedModel, setSelectedModel] = useState('');
+
+  async function fileToDataUrl(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function handleImageFiles(fileList) {
+    const files = [...(fileList || [])].filter((file) => file.type.startsWith('image/'));
+    if (!files.length || isOcrBusy) return;
+    setIsOcrBusy(true);
+    try {
+      const summaries = [];
+      for (const file of files.slice(0, 4)) {
+        const image = await fileToDataUrl(file);
+        const response = await fetch('/api/ocr', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: file.name, image })
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'OCR failed');
+        summaries.push(`รูปภาพ: ${file.name}\nข้อความที่ OCR อ่านได้:\n${data.text || '(อ่านตัวอักษรไม่พบ)'}\nความมั่นใจ OCR: ${Math.round(data.confidence || 0)}%`);
+      }
+      setInput((current) => [current, ...summaries].filter(Boolean).join('\n\n'));
+    } catch (error) {
+      setInput((current) => [current, `OCR รูปภาพไม่สำเร็จ: ${error.message}`].filter(Boolean).join('\n\n'));
+    } finally {
+      setIsOcrBusy(false);
+    }
+  }
+
+  async function loadModels() {
+    try {
+      const response = await fetch('/api/models');
+      const data = await response.json();
+      setModels(data.models || []);
+      setSelectedModel(data.selected || '');
+    } catch {}
+  }
+
+  async function selectModel(model) {
+    setSelectedModel(model);
+    await fetch('/api/models/select', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model })
+    });
+    await loadModels();
+  }
+
+  useEffect(() => { loadModels(); }, []);
 
   async function sendMessage() {
     const content = input.trim();
@@ -272,6 +387,7 @@ function App() {
       setMissingFields(data.missingFields || []);
       setIsReady(Boolean(data.isReadyToSave));
       setLastAgentReply(reply);
+      setRagContext(data.ragContext || { items: [], count: 0 });
     } catch (error) {
       setMode('error');
       setMessages([...nextMessages, { role: 'assistant', content: `เกิดข้อผิดพลาด: ${error.message}` }]);
@@ -313,40 +429,19 @@ function App() {
     setIsReady(false);
     setSaveStatus('เริ่ม session ใหม่แล้ว');
     setLastAgentReply('');
+    setRagContext({ items: [], count: 0 });
   }
 
   return (
-    <main className="app-shell">
-      <section className="hero-grid">
-        <motion.div className="hero-copy" initial={{ opacity: 0, y: 24 }} animate={{ opacity: 1, y: 0 }}>
-          <div className="product-chip"><Sparkle size={15} /> Local Gemma E4B QAT Command Desk</div>
-          <h1>Premium AI triage for real-world support noise.</h1>
-          <p>แชทเก็บบริบท วิเคราะห์ ticket draft และส่งเข้า Google Sheet ด้วย local model บน Apple Silicon ทั้งหมดใน UI เดียว</p>
-          <div className="hero-pills">
-            <StatusPill icon={ShieldCheck} label="Local-first" tone="ready" />
-            <StatusPill icon={DatabaseZap} label="Sheets logging" />
-            <StatusPill icon={Radar} label="Context-aware" />
-          </div>
-        </motion.div>
-        <motion.div className="hero-visual" initial={{ opacity: 0, scale: 0.96 }} animate={{ opacity: 1, scale: 1 }} transition={{ delay: 0.15 }}>
-          <Hero3D />
-          <div className="scene-caption">
-            <span>3D incident graph</span>
-            <strong>CCTV/NVR context router</strong>
-          </div>
-        </motion.div>
-      </section>
-
-      <section className="design-brief glass-panel">
-        <div><span>Visual direction</span><p>{designSystem.visualDirection}</p></div>
-        <div><span>Motion</span><p>{designSystem.animationRules}</p></div>
-        <div><span>Scene</span><p>{designSystem.sceneComposition}</p></div>
-      </section>
-
-      <section className="workbench">
-        <ChatConsole messages={messages} input={input} setInput={setInput} sendMessage={sendMessage} isThinking={isThinking} resetChat={resetChat} mode={mode} />
-        <TicketDraft ticket={ticket} setTicket={setTicket} isReady={isReady} missingFields={missingFields} saveTicket={saveTicket} isSaving={isSaving} saveStatus={saveStatus} />
-      </section>
+    <main className="flex h-screen overflow-hidden bg-slate-50 text-zinc-950">
+      <Sidebar resetChat={resetChat} mode={mode} knowledgeCount={ragContext.count || 0} models={models} selectedModel={selectedModel} selectModel={selectModel} />
+      <div className="flex min-w-0 flex-1 flex-col">
+        <div className="flex min-h-0 flex-1">
+          <ChatPane messages={messages} input={input} setInput={setInput} sendMessage={sendMessage} isThinking={isThinking} resetChat={resetChat} mode={mode} handleImageFiles={handleImageFiles} isOcrBusy={isOcrBusy} />
+          <TicketPanel ticket={ticket} setTicket={setTicket} isReady={isReady} missingFields={missingFields} saveTicket={saveTicket} isSaving={isSaving} saveStatus={saveStatus} ragContext={ragContext} />
+        </div>
+        <MobileTicketBar ticket={ticket} saveTicket={saveTicket} isSaving={isSaving} />
+      </div>
     </main>
   );
 }

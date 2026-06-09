@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="th">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Knowledge Admin</title>
+    <style>
+      * { box-sizing: border-box; }
+      body { margin: 0; min-height: 100vh; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f8fafc; color: #18181b; }
+      header { height: 64px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 0 24px; border-bottom: 1px solid #e4e4e7; background: white; }
+      h1 { margin: 0; font-size: 16px; }
+      main { display: grid; grid-template-columns: 360px 1fr; height: calc(100vh - 64px); }
+      aside { border-right: 1px solid #e4e4e7; background: white; overflow: auto; padding: 16px; }
+      section { min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
+      .toolbar { display: flex; gap: 8px; padding: 16px; border-bottom: 1px solid #e4e4e7; background: #fff; align-items: center; }
+      button { border: 1px solid #e4e4e7; background: white; color: #27272a; border-radius: 10px; padding: 9px 12px; font-weight: 600; cursor: pointer; }
+      button.primary { border-color: #18181b; background: #18181b; color: white; }
+      button.danger { color: #b91c1c; }
+      input { width: 100%; border: 1px solid #e4e4e7; border-radius: 10px; padding: 10px 12px; outline: none; }
+      textarea { flex: 1; width: 100%; resize: none; border: 0; outline: none; padding: 18px; font: 14px/1.65 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+      .dropzone { margin-bottom: 14px; border: 1.5px dashed #c7d2fe; background: #eef2ff; border-radius: 16px; padding: 18px; text-align: center; color: #4338ca; }
+      .dropzone.dragover { border-color: #4f46e5; background: #e0e7ff; }
+      .dropzone strong { display: block; font-size: 14px; }
+      .dropzone span { display: block; margin-top: 6px; font-size: 12px; color: #6366f1; }
+      .dropzone input { display: none; }
+      .note { width: 100%; text-align: left; margin-top: 8px; border-radius: 12px; padding: 12px; border: 1px solid #e4e4e7; background: #fafafa; }
+      .note.active { border-color: #4f46e5; background: #eef2ff; }
+      .note strong { display: block; font-size: 13px; }
+      .note span { display: block; margin-top: 4px; color: #71717a; font-size: 12px; word-break: break-all; }
+      .status { color: #71717a; font-size: 13px; }
+      .hint { margin: 8px 0 14px; color: #71717a; font-size: 12px; line-height: 1.5; }
+      @media (max-width: 860px) { main { grid-template-columns: 1fr; } aside { height: 360px; border-right: 0; border-bottom: 1px solid #e4e4e7; } }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div>
+        <h1>Knowledge Admin</h1>
+        <div class="status">ลากไฟล์มาวางเพื่อเพิ่ม knowledge ให้ RAG</div>
+      </div>
+      <button id="reindexBtn">Reindex</button>
+    </header>
+    <main>
+      <aside>
+        <label id="dropzone" class="dropzone">
+          <input id="fileInput" type="file" multiple accept=".md,.markdown,.txt,.pdf,.doc,.docx" />
+          <strong>ลากไฟล์มาวาง หรือคลิกเพื่อเลือกไฟล์</strong>
+          <span>รองรับ .md และ .txt แบบอ่านเนื้อหาได้ทันที ส่วน .pdf/.docx จะสร้าง note placeholder ให้แก้ต่อ</span>
+        </label>
+        <input id="newPath" placeholder="SOP/wifi-troubleshooting.md" />
+        <button id="newBtn" class="primary" style="width:100%;margin-top:8px;">Create / Open</button>
+        <p class="hint">Tip: วางไฟล์ SOP, asset list, vendor contact, incident note แล้วระบบจะ save ลง knowledge/Uploads และ reindex อัตโนมัติ</p>
+        <div id="notes"></div>
+      </aside>
+      <section>
+        <div class="toolbar">
+          <button id="saveBtn" class="primary">Save + Reindex</button>
+          <button id="deleteBtn" class="danger">Delete</button>
+          <span id="status" class="status"></span>
+        </div>
+        <textarea id="editor" placeholder="# Title\n\nเขียน SOP, asset, vendor note หรือ incident note ได้ที่นี่..."></textarea>
+      </section>
+    </main>
+    <script>
+      const notesEl = document.querySelector('#notes');
+      const editor = document.querySelector('#editor');
+      const statusEl = document.querySelector('#status');
+      const newPath = document.querySelector('#newPath');
+      const dropzone = document.querySelector('#dropzone');
+      const fileInput = document.querySelector('#fileInput');
+      let currentPath = '';
+      let notes = [];
+
+      function setStatus(text) { statusEl.textContent = text; }
+
+      async function api(url, options = {}) {
+        const res = await fetch(url, { headers: { 'Content-Type': 'application/json' }, ...options });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'request failed');
+        return data;
+      }
+
+      function renderNotes() {
+        notesEl.innerHTML = '';
+        for (const note of notes) {
+          const btn = document.createElement('button');
+          btn.className = `note ${note.path === currentPath ? 'active' : ''}`;
+          btn.innerHTML = `<strong>${note.title}</strong><span>${note.path}</span>`;
+          btn.onclick = () => openNote(note.path);
+          notesEl.append(btn);
+        }
+      }
+
+      async function loadNotes() {
+        const data = await api('/api/admin/knowledge');
+        notes = data.notes;
+        renderNotes();
+      }
+
+      async function openNote(path) {
+        currentPath = path;
+        newPath.value = path;
+        const data = await api(`/api/admin/knowledge/file?path=${encodeURIComponent(path)}`);
+        editor.value = data.content;
+        renderNotes();
+        setStatus(`Opened ${path}`);
+      }
+
+      async function uploadFiles(fileList) {
+        const files = [...fileList];
+        if (!files.length) return;
+        setStatus(`Reading ${files.length} file(s)...`);
+        const payload = [];
+        for (const file of files) {
+          const ext = file.name.split('.').pop().toLowerCase();
+          const canReadText = ['md', 'markdown', 'txt'].includes(ext) || file.type.startsWith('text/');
+          payload.push({
+            name: file.name,
+            type: file.type,
+            content: canReadText ? await file.text() : ''
+          });
+        }
+        const data = await api('/api/admin/knowledge/upload', { method: 'POST', body: JSON.stringify({ files: payload }) });
+        setStatus(`Uploaded ${data.saved.length} file(s). Indexed ${data.index.count} notes.`);
+        await loadNotes();
+        if (data.saved[0]) await openNote(data.saved[0]);
+      }
+
+      dropzone.addEventListener('dragover', (event) => { event.preventDefault(); dropzone.classList.add('dragover'); });
+      dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
+      dropzone.addEventListener('drop', async (event) => {
+        event.preventDefault();
+        dropzone.classList.remove('dragover');
+        try { await uploadFiles(event.dataTransfer.files); } catch (error) { setStatus(error.message); }
+      });
+      fileInput.addEventListener('change', async () => {
+        try { await uploadFiles(fileInput.files); fileInput.value = ''; } catch (error) { setStatus(error.message); }
+      });
+
+      document.querySelector('#newBtn').onclick = () => {
+        const path = newPath.value.trim();
+        if (!path.endsWith('.md')) return setStatus('Path ต้องลงท้าย .md');
+        currentPath = path;
+        editor.value = `# ${path.split('/').pop().replace(/\.md$/, '').replaceAll('-', ' ')}\n\n`;
+        renderNotes();
+        setStatus(`Editing new note ${path}`);
+      };
+
+      document.querySelector('#saveBtn').onclick = async () => {
+        if (!currentPath) return setStatus('เลือกหรือสร้าง note ก่อน');
+        const data = await api('/api/admin/knowledge/file', { method: 'POST', body: JSON.stringify({ path: currentPath, content: editor.value }) });
+        setStatus(`Saved ${data.path}. Indexed ${data.index.count} notes.`);
+        await loadNotes();
+      };
+
+      document.querySelector('#deleteBtn').onclick = async () => {
+        if (!currentPath) return setStatus('เลือก note ก่อน');
+        if (!confirm(`Delete ${currentPath}?`)) return;
+        const data = await api('/api/admin/knowledge/file', { method: 'DELETE', body: JSON.stringify({ path: currentPath }) });
+        editor.value = '';
+        currentPath = '';
+        setStatus(`Deleted ${data.path}. Indexed ${data.index.count} notes.`);
+        await loadNotes();
+      };
+
+      document.querySelector('#reindexBtn').onclick = async () => {
+        const data = await api('/api/admin/knowledge/reindex', { method: 'POST', body: '{}' });
+        setStatus(`Reindexed ${data.index.count} notes.`);
+        await loadNotes();
+      };
+
+      loadNotes().catch((error) => setStatus(error.message));
+    </script>
+  </body>
+</html>

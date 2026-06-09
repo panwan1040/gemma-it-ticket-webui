@@ -130,3 +130,41 @@ Web UI ตอนนี้เป็น multi-turn chat:
 อย่ากด Run ที่ `doPost` ตรงๆ เพราะ Apps Script จะไม่มี `e.postData` ให้ ทำให้เกิด error ได้
 
 ถ้าต้องการทดสอบใน Apps Script editor ให้ Run ฟังก์ชัน `testDoPost` แทน
+
+## Local knowledge vault / RAG
+
+โปรเจกต์มี knowledge vault แบบ Markdown ที่ `knowledge/` เพื่อใช้กับ local RAG:
+
+```text
+knowledge/SOP/
+knowledge/Assets/
+knowledge/Incidents/
+```
+
+สร้าง index ใหม่หลังเพิ่มหรือแก้ note:
+
+```zsh
+npm run index:knowledge
+```
+
+ค้น knowledge ผ่าน API:
+
+```text
+/api/rag/search?q=กล้องหน้าโกดัง
+```
+
+เมื่อบันทึก ticket ระบบจะสร้าง incident note ลง `knowledge/Incidents/` ด้วย เพื่อให้เคสเก่ากลับมาเป็น context ในรอบถัดไป
+
+ถ้าใช้ Obsidian ให้เปิดโฟลเดอร์ `knowledge/` เป็น vault ได้ทันที หรือย้าย `knowledge/` ไปอยู่ใน Obsidian vault แล้ว symlink กลับมาในโปรเจกต์นี้
+
+## Image OCR worker
+
+Chat UI รองรับการแนบรูป screenshot แล้ว ระบบจะส่งรูปไป `/api/ocr` เพื่อ OCR เป็นข้อความก่อน แล้วนำข้อความที่อ่านได้เข้า conversation context ให้ Gemma วิเคราะห์ต่อ
+
+ข้อดีคือใช้ทรัพยากรน้อยกว่า vision model เต็มรูปแบบ และเหมาะกับ error screenshot / printer panel / NVR message
+
+ข้อจำกัดปัจจุบัน:
+
+- OCR ใช้ภาษาอังกฤษเป็นหลัก
+- รูปไม่ควรเกิน 8MB
+- หากเป็นภาพที่ไม่มีตัวอักษร ควรใช้ vision model/mmproj เพิ่มในอนาคต
