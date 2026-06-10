@@ -68,3 +68,58 @@ test('protected admin endpoints require auth', async () => {
   assert.equal(auth.status, 200);
   server.close();
 });
+
+test('utility bill extraction avoids unsafe amount guessing', () => {
+  const full = mod.extractUtilityBill('การไฟฟ้าส่วนภูมิภาค G08101 GRST0181 020019320090 000022098363 5700622483 04/2559 1516.000 1284.000 232.000 ค่าพลังงานไฟฟ้า 865.13 ค่าบริการรายเดือน 8.19 ค่า Ft -11.14 รวมเงินค่าไฟฟ้า 862.18 ภาษีมูลค่าเพิ่ม 7 % 60.35 รวมเงินที่ต้องชำระ 922.53 วันครบกำหนดชำระเงิน 25 เม.ย. 2559');
+  assert.match(full, /ค่าบริการรายเดือน \| 8\.19/);
+  assert.match(full, /รวมเงินที่ต้องชำระ \| 922\.53/);
+
+  const degraded = mod.extractUtilityBill('การไฟฟ้าส่วนภูมิภาค G08101 GRST0181 020019320090 000022098363 5700622483 04/2559 1516.000 1284.000 232.000 ค่าพลังงานไฟฟ้า 865.13 ค่า Ft -11.14 รวมเงินที่ต้องชำระ 922.53 ****922.53 วันครบกำหนดชำระเงิน 25 เม.ย. 2559');
+  assert.doesNotMatch(degraded, /-853\.99/);
+  assert.match(degraded, /ค่าบริการรายเดือน \| \[ต้องตรวจทาน\]/);
+});
+
+test('electricity invoice JSON keeps identifiers as strings and validates totals', () => {
+  const invoice = mod.extractElectricityInvoiceJson(`การไฟฟ้าส่วนภูมิภาค G08101 GRST0181
+หมายเลขผู้ใช้ไฟฟ้า CA/Ref.No.1 020019320090
+Invoice No./Ref.No.2 000022098363
+รหัสเครื่องวัด PEA No. 5700622483 ประจำเดือน 04/2559
+1516.000 1284.000 232.000
+ค่าพลังงานไฟฟ้า 865.13
+ค่าบริการรายเดือน 8.19
+ค่า Ft -0.0480 บาท/หน่วย -11.14
+รวมเงินค่าไฟฟ้า 862.18
+ภาษีมูลค่าเพิ่ม 7 % 60.35
+รวมเงินที่ต้องชำระ 922.53
+วันครบกำหนดชำระเงิน 25 เม.ย. 2559`);
+  assert.equal(invoice.document_info.document_type, 'electricity_invoice');
+  assert.equal(invoice.customer_info.ca_ref_no, '020019320090');
+  assert.equal(invoice.customer_info.invoice_no, '000022098363');
+  assert.equal(invoice.amounts.grand_total, 922.53);
+  assert.equal(invoice.validation.subtotal_plus_vat_equals_grand_total, true);
+});
+
+test('factory electricity invoice JSON separates based amount, subtotal, vat, and grand total', () => {
+  const invoice = mod.extractElectricityInvoiceJson(`ใบแจ้งค่าไฟฟ้า Smart Invoice
+หมายเลขผู้ใช้ไฟฟ้า CA:Ref.No.1 020001393684
+เลขที่ใบแจ้งค่าไฟฟ้า Invoice no. 015511999940
+จำนวนเงิน (บาท) Total (Baht) 13,253,795.45
+วันที่ครบกำหนดค่าไฟฟ้าเดือนปัจจุบัน Due Date 22 มิถุนายน 2569
+G23103 GTTM9803 5900797446 31/05/2569 05/2569
+เงินค่าไฟฟ้าฐาน (Based Amount) 11,817,246.48
+ค่า Ft พ.ค.69-ส.ค.69=0.1623 บาท/หน่วย 569,478.24
+*ส่วนลด (Discount)
+รวมเงินค่าไฟฟ้า (Sub Total) 12,386,724.72
+ภาษีมูลค่าเพิ่ม 7.00 % (VAT) 867,070.73
+รวมเงินค่าไฟฟ้าเดือนปัจจุบัน (Total) 13,253,795.45
+รวมเงินทั้งสิ้น (Grand Total) 13,253,795.45`);
+  assert.equal(invoice.customer_info.ca_ref_no, '020001393684');
+  assert.equal(invoice.amounts.base_amount, 11817246.48);
+  assert.equal(invoice.amounts.ft_rate, 0.1623);
+  assert.equal(invoice.amounts.ft_amount, 569478.24);
+  assert.equal(invoice.amounts.subtotal, 12386724.72);
+  assert.equal(invoice.amounts.vat_amount, 867070.73);
+  assert.equal(invoice.amounts.grand_total, 13253795.45);
+  assert.equal(invoice.validation.base_plus_ft_minus_discount_equals_subtotal, true);
+  assert.equal(invoice.validation.subtotal_plus_vat_equals_grand_total, true);
+});

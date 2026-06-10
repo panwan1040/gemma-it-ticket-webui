@@ -44,6 +44,7 @@ const defaultConfig = {
 const publicNavItems = [
   { path: '/', label: 'แจ้งปัญหา', description: 'รับเรื่องและร่างใบงาน', icon: ClipboardList },
   { path: '/knowledge-chat', label: 'แชท AI', description: 'ถามงานหรืออ่านเอกสาร', icon: BookOpen },
+  { path: '/electricity-bills', label: 'บิลค่าไฟ', description: 'อ่าน JSON และส่งชีท', icon: Database },
   { path: '/ocr', label: 'OCR Studio', description: 'อ่านข้อความและ export', icon: FileText }
 ];
 const routeItems = [
@@ -146,8 +147,8 @@ function escapeHtml(value) {
   return String(value || '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
 }
 function exportOcrRowsToExcel(rows) {
-  const htmlRows = rows.map((row) => `<tr><td>${escapeHtml(row.name)}</td><td>${escapeHtml(row.status)}</td><td>${escapeHtml(row.size)}</td><td>${escapeHtml(row.text)}</td></tr>`).join('');
-  const html = `<!doctype html><html><head><meta charset="utf-8" /></head><body><table><thead><tr><th>File</th><th>Status</th><th>Size</th><th>OCR Text</th></tr></thead><tbody>${htmlRows}</tbody></table></body></html>`;
+  const htmlRows = rows.map((row) => `<tr><td>${escapeHtml(row.name)}</td><td>${escapeHtml(row.status)}</td><td>${escapeHtml(row.size)}</td><td>${escapeHtml(row.structured)}</td><td>${escapeHtml(row.text)}</td></tr>`).join('');
+  const html = `<!doctype html><html><head><meta charset="utf-8" /></head><body><table><thead><tr><th>File</th><th>Status</th><th>Size</th><th>Structured Review</th><th>OCR Text</th></tr></thead><tbody>${htmlRows}</tbody></table></body></html>`;
   downloadBlob(`ocr-export-${new Date().toISOString().slice(0, 10)}.xls`, html, 'application/vnd.ms-excel;charset=utf-8');
 }
 function looksLikeTicketIntent(text) {
@@ -564,6 +565,8 @@ function OcrStudioPage() {
   const [items, setItems] = useState([]);
   const [selectedId, setSelectedId] = useState('');
   const [busy, setBusy] = useState(false);
+  const [structuring, setStructuring] = useState(false);
+  const [documentType, setDocumentType] = useState('utility_bill');
   const [notice, setNotice] = useState('ลาก PDF/รูปภาพ/ไฟล์ข้อความมาวาง หรือกดเลือกไฟล์เพื่อ OCR');
   const selected = items.find((item) => item.id === selectedId) || items[0] || null;
   const readableItems = items.filter((item) => item.ocrText?.trim());
@@ -576,7 +579,7 @@ function OcrStudioPage() {
     if (!files.length || busy) return;
     setBusy(true);
     setNotice(`กำลังอ่านข้อความจาก ${files.length} ไฟล์...`);
-    const initial = files.map((file) => ({ id: crypto.randomUUID?.() || `${Date.now()}-${file.name}`, name: file.name, size: file.size, type: file.type, status: 'queued', ocrText: '', error: '' }));
+    const initial = files.map((file) => ({ id: crypto.randomUUID?.() || `${Date.now()}-${file.name}`, name: file.name, size: file.size, type: file.type, status: 'queued', ocrText: '', structuredText: '', error: '' }));
     setItems((current) => [...initial, ...current]);
     setSelectedId(initial[0].id);
     for (let index = 0; index < files.length; index += 1) {
@@ -624,28 +627,53 @@ function OcrStudioPage() {
   }
   function setSelectedText(value) {
     if (!selected) return;
-    updateItem(selected.id, { ocrText: value, status: value.trim() ? 'readable' : selected.status });
+    updateItem(selected.id, { ocrText: value, structuredText: '', status: value.trim() ? 'readable' : selected.status });
   }
-  async function copySelected() {
-    if (!selected?.ocrText) return;
+  async function copyText(text, label) {
+    if (!text) return;
     try {
-      await navigator.clipboard.writeText(selected.ocrText);
+      await navigator.clipboard.writeText(text);
     } catch {
       const area = document.createElement('textarea');
-      area.value = selected.ocrText;
+      area.value = text;
       document.body.appendChild(area);
       area.select();
       document.execCommand('copy');
       area.remove();
     }
-    setNotice(`คัดลอกข้อความจาก ${selected.name} แล้ว`);
+    setNotice(`คัดลอก${label}จาก ${selected?.name || 'ไฟล์'} แล้ว`);
+  }
+  async function copySelected() {
+    if (!selected?.ocrText) return;
+    await copyText(selected.ocrText, 'ข้อความ OCR');
+  }
+  async function structureSelected() {
+    if (!selected?.ocrText || structuring) return;
+    setStructuring(true);
+    setNotice(`กำลังสกัดข้อมูลสำคัญจาก ${selected.name}...`);
+    try {
+      const response = await fetch('/api/ocr/structure', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: selected.ocrText, documentType, name: selected.name })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'structure failed');
+      updateItem(selected.id, { structuredText: data.structuredText || '' });
+      setNotice('สกัดข้อมูลสำคัญแล้ว กรุณาตรวจทานกับไฟล์ต้นฉบับก่อนใช้งานจริง');
+    } catch (error) {
+      setNotice(`สกัดข้อมูลไม่สำเร็จ: ${error.message}`);
+    } finally {
+      setStructuring(false);
+    }
   }
   function exportSelectedTxt() {
     if (!selected?.ocrText) return;
-    downloadBlob(`${selected.name.replace(/\.[^.]+$/, '') || 'ocr-result'}.txt`, selected.ocrText, 'text/plain;charset=utf-8');
+    const text = selected.structuredText ? `${selected.structuredText}\n\n--- RAW OCR ---\n\n${selected.ocrText}` : selected.ocrText;
+    downloadBlob(`${selected.name.replace(/\.[^.]+$/, '') || 'ocr-result'}.txt`, text, 'text/plain;charset=utf-8');
   }
   function exportExcel() {
-    const rows = items.map((item) => ({ name: item.name, status: statusText(item), size: formatBytes(item.size), text: item.ocrText || item.error || '' }));
+    const rows = items.map((item) => ({ name: item.name, status: statusText(item), size: formatBytes(item.size), structured: item.structuredText || '', text: item.ocrText || item.error || '' }));
     exportOcrRowsToExcel(rows);
   }
   function sendSelectedToAi() {
@@ -676,13 +704,186 @@ function OcrStudioPage() {
       <main className="ocr-result">
         {selected ? <Card className="ocr-editor">
           <div className="sheet-head"><div><h2>{selected.name}</h2><p>{statusText(selected)}{selected.error ? ` · ${selected.error}` : ''}</p></div><StatusPill tone={selected.status === 'readable' ? 'ok' : selected.status === 'processing' ? 'info' : selected.status === 'error' || selected.status === 'unreadable' ? 'warning' : 'neutral'}>{statusText(selected)}</StatusPill></div>
+          <div className="ocr-tools">
+            <label><span>ประเภทเอกสาร</span><select value={documentType} onChange={(event) => setDocumentType(event.target.value)}>
+              <option value="utility_bill">บิล/ใบแจ้งหนี้</option>
+              <option value="general">เอกสารทั่วไป</option>
+            </select></label>
+            <Button variant="secondary" disabled={!selected.ocrText || structuring} onClick={structureSelected}>{structuring ? <Loader2 className="spin" size={16} /> : <Database size={16} />}สกัดข้อมูลสำคัญ</Button>
+          </div>
           <textarea value={selected.ocrText || ''} onChange={(event) => setSelectedText(event.target.value)} placeholder="ผล OCR จะแสดงที่นี่ และสามารถแก้ไขก่อน export ได้" />
+          {selected.structuredText ? <div className="ocr-structured">
+            <div className="section-label"><strong>ข้อมูลสำคัญที่สกัดได้</strong><span>ใช้เป็น draft เท่านั้น ต้องตรวจทานกับไฟล์ต้นฉบับก่อนนำไปใช้งานจริง</span></div>
+            <MarkdownMessage>{selected.structuredText}</MarkdownMessage>
+          </div> : null}
           <div className="ocr-actions">
             <Button variant="secondary" disabled={!selected.ocrText} onClick={copySelected}><Copy size={16} />Copy</Button>
+            <Button variant="secondary" disabled={!selected.structuredText} onClick={() => copyText(selected.structuredText, 'ข้อมูลสำคัญ')}><Copy size={16} />Copy สรุป</Button>
             <Button variant="secondary" disabled={!selected.ocrText} onClick={exportSelectedTxt}><Download size={16} />TXT</Button>
             <Button variant="secondary" disabled={!selected.ocrText} onClick={sendSelectedToAi}><BookOpen size={16} />ส่งไปแชท AI</Button>
           </div>
         </Card> : <EmptyState icon={FileText} title="เลือกไฟล์เพื่อ OCR" description="ผลลัพธ์จะแสดงเป็นข้อความที่ copy, แก้ไข และ export ได้" />}
+      </main>
+    </section>
+  </div>;
+}
+
+function validationText(value) {
+  if (value === true) return 'ผ่าน';
+  if (value === false) return 'ไม่ตรง';
+  return 'ข้อมูลไม่พอ';
+}
+function validationTone(value) {
+  if (value === true) return 'ok';
+  if (value === false) return 'danger';
+  return 'warning';
+}
+function ElectricityBillPage() {
+  const [fileName, setFileName] = useState('');
+  const [ocrText, setOcrText] = useState('');
+  const [invoiceText, setInvoiceText] = useState('');
+  const [invoice, setInvoice] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [notice, setNotice] = useState('เลือก PDF/รูปใบแจ้งค่าไฟ PEA เพื่อสกัดเป็น JSON ก่อนส่ง Google Sheet');
+  const [saveState, setSaveState] = useState('');
+  const invoiceError = useMemo(() => {
+    if (!invoiceText.trim()) return '';
+    try {
+      JSON.parse(invoiceText);
+      return '';
+    } catch (error) {
+      return error.message;
+    }
+  }, [invoiceText]);
+
+  function setInvoiceFromObject(nextInvoice) {
+    setInvoice(nextInvoice);
+    setInvoiceText(JSON.stringify(nextInvoice, null, 2));
+  }
+  async function extractFiles(fileList) {
+    const file = Array.from(fileList || [])[0];
+    if (!file || busy) return;
+    setBusy(true);
+    setSaveState('');
+    setFileName(file.name);
+    setNotice(`กำลัง OCR และสกัด JSON จาก ${file.name}...`);
+    try {
+      const base64 = await readFileAsBase64(file);
+      const response = await fetch('/api/electricity-bills/extract', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ file: { name: file.name, type: file.type, base64 } })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'extract failed');
+      setOcrText(data.ocrText || '');
+      setInvoiceFromObject(data.invoice);
+      setNotice(data.sheetEnabled ? 'สกัด JSON แล้ว ตรวจข้อมูลก่อนกดบันทึก Google Sheet' : 'สกัด JSON แล้ว แต่ยังไม่ได้ตั้งค่า ELECTRICITY_BILL_WEBHOOK_URL จึงบันทึกได้เฉพาะในเครื่อง');
+    } catch (error) {
+      setNotice(`อ่านบิลไม่สำเร็จ: ${error.message}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+  function applyJsonEdit(value) {
+    setInvoiceText(value);
+    try {
+      setInvoice(JSON.parse(value));
+    } catch {}
+  }
+  async function copyJson() {
+    if (!invoiceText) return;
+    await navigator.clipboard.writeText(invoiceText).catch(() => {});
+    setNotice('คัดลอก JSON แล้ว');
+  }
+  function downloadJson() {
+    if (!invoiceText) return;
+    downloadBlob(`${fileName.replace(/\.[^.]+$/, '') || 'electricity-invoice'}.json`, invoiceText, 'application/json;charset=utf-8');
+  }
+  async function saveBill() {
+    if (!invoice || invoiceError || saving) return;
+    setSaving(true);
+    setSaveState('กำลังบันทึก...');
+    try {
+      const response = await fetch('/api/electricity-bills/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sourceName: fileName, invoice, ocrText })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'save failed');
+      if (data.sheetEnabled && !data.webhookOk) {
+        setSaveState(`บันทึกในเครื่องแล้ว แต่ส่ง Google Sheet ไม่สำเร็จ: ${data.webhookError || 'unknown error'}`);
+      } else {
+        setSaveState(data.sheetEnabled ? 'บันทึกในเครื่องและส่ง Google Sheet แล้ว' : 'บันทึกในเครื่องแล้ว ยังไม่ได้ตั้งค่า Google Sheet webhook');
+      }
+    } catch (error) {
+      setSaveState(`บันทึกไม่สำเร็จ: ${error.message}`);
+    } finally {
+      setSaving(false);
+    }
+  }
+  const validations = invoice?.validation || {};
+  const confidence = invoice?.confidence?.overall;
+  const lowFields = invoice?.confidence?.low_confidence_fields || [];
+  return <div className="page bill-page">
+    <PageTop
+      title="อ่านบิลค่าไฟ"
+      description="OCR ใบแจ้งค่าไฟ PEA เป็น JSON ตรวจทานได้ แล้วบันทึกลง Google Sheet"
+      actions={<><StatusPill tone={busy ? 'info' : invoice ? 'ok' : 'neutral'}>{busy ? 'กำลังอ่านบิล' : invoice ? `Confidence ${Math.round((confidence || 0) * 100)}%` : 'รอไฟล์'}</StatusPill><Button variant="secondary" disabled={!invoiceText} onClick={downloadJson}><Download size={16} />JSON</Button></>}
+    />
+    <section className="bill-layout">
+      <aside className="bill-sidebar">
+        <label className="ocr-drop" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); extractFiles(event.dataTransfer.files); }}>
+          <UploadCloud size={24} />
+          <strong>ลากบิลค่าไฟมาวาง</strong>
+          <span>รองรับ PDF, PNG, JPG, WEBP จาก PEA และให้ตรวจ JSON ก่อนส่งชีท</span>
+          <input type="file" accept=".pdf,.png,.jpg,.jpeg,.webp" onChange={(event) => extractFiles(event.target.files)} />
+        </label>
+        <div className="notice">{notice}</div>
+        {fileName ? <Card className="bill-file-card"><FileText size={17} /><div><strong>{fileName}</strong><small>{ocrText ? `${ocrText.length.toLocaleString()} OCR chars` : 'ยังไม่มี OCR text'}</small></div></Card> : null}
+        {invoice ? <Card className="bill-summary-card">
+          <h3>ข้อมูลหลัก</h3>
+          <dl>
+            <dt>CA/Ref.No.1</dt><dd>{invoice.customer_info?.ca_ref_no || '-'}</dd>
+            <dt>Invoice No.</dt><dd>{invoice.customer_info?.invoice_no || '-'}</dd>
+            <dt>รอบบิล</dt><dd>{invoice.billing_info?.bill_period || '-'}</dd>
+            <dt>Due date</dt><dd>{invoice.billing_info?.due_date || '-'}</dd>
+            <dt>หน่วยรวม</dt><dd>{invoice.energy?.total_kwh ?? '-'}</dd>
+            <dt>ยอดรวม</dt><dd>{invoice.amounts?.grand_total ?? '-'}</dd>
+          </dl>
+        </Card> : null}
+      </aside>
+      <main className="bill-main">
+        {invoice ? <>
+          <div className="validation-grid">
+            {[
+              ['base_plus_ft_minus_discount_equals_subtotal', 'ฐาน + Ft - ส่วนลด = Subtotal'],
+              ['subtotal_plus_vat_equals_grand_total', 'Subtotal + VAT = Grand total'],
+              ['energy_sum_equals_total_kwh', 'ผลรวมหน่วย = หน่วยรวม']
+            ].map(([key, label]) => <Card key={key} className="validation-card">
+              <StatusPill tone={validationTone(validations[key])}>{validationText(validations[key])}</StatusPill>
+              <strong>{label}</strong>
+            </Card>)}
+          </div>
+          {lowFields.length ? <div className="notice warning">ช่องที่ควรตรวจทาน: {lowFields.slice(0, 14).join(', ')}{lowFields.length > 14 ? ` และอีก ${lowFields.length - 14} ช่อง` : ''}</div> : null}
+          <Card className="json-card">
+            <div className="sheet-head"><div><h2>Electricity invoice JSON</h2><p>แก้ไขได้ก่อนบันทึก ระบบจะส่ง JSON และ flat fields ไปยัง webhook</p></div>{invoiceError ? <StatusPill tone="danger">JSON ไม่ถูกต้อง</StatusPill> : <StatusPill tone="ok">JSON valid</StatusPill>}</div>
+            <textarea className="json-editor" value={invoiceText} onChange={(event) => applyJsonEdit(event.target.value)} spellCheck="false" />
+            {invoiceError ? <div className="notice danger">{invoiceError}</div> : null}
+            <div className="ocr-actions">
+              <Button variant="secondary" onClick={copyJson}><Copy size={16} />Copy JSON</Button>
+              <Button variant="secondary" onClick={downloadJson}><Download size={16} />Download JSON</Button>
+              <Button disabled={Boolean(invoiceError) || saving} onClick={saveBill}>{saving ? <Loader2 className="spin" size={16} /> : <Save size={16} />}{saving ? 'กำลังบันทึก' : 'บันทึกลง Sheet'}</Button>
+            </div>
+            {saveState ? <div className={cn('save-note', saveState.includes('ไม่สำเร็จ') ? 'error' : saveState.includes('webhook') ? 'webhookFailed' : 'saved')}>{saveState}</div> : null}
+          </Card>
+        </> : <EmptyState icon={Database} title="ยังไม่มี JSON บิลค่าไฟ" description="อัปโหลดไฟล์ PDF หรือรูปบิลค่าไฟ ระบบจะอ่าน OCR แล้วสกัดข้อมูลเป็น JSON ตาม schema ที่กำหนด">
+          <div className="hint-grid">
+            {['เลข CA/Ref.No.1 และ Invoice', 'รอบบิลและวันครบกำหนด', 'หน่วยการใช้ไฟฟ้า', 'ยอด Ft, VAT และยอดรวม'].map((item) => <span key={item}><CheckCircle2 size={14} />{item}</span>)}
+          </div>
+        </EmptyState>}
       </main>
     </section>
   </div>;
@@ -1129,7 +1330,7 @@ function App() {
   useEffect(() => {
     fetch('/api/config').then((res) => res.json()).then((data) => setConfig({ ...defaultConfig, ...data })).catch(() => setConfig(defaultConfig));
   }, []);
-  const page = path === '/knowledge-chat' ? <KnowledgeChatPage /> : path === '/ocr' ? <OcrStudioPage /> : path === '/admin' ? <DocumentLibraryPage /> : <TicketIntakePage config={config} />;
+  const page = path === '/knowledge-chat' ? <KnowledgeChatPage /> : path === '/electricity-bills' ? <ElectricityBillPage /> : path === '/ocr' ? <OcrStudioPage /> : path === '/admin' ? <DocumentLibraryPage /> : <TicketIntakePage config={config} />;
   return <AppShell config={config} path={path} navigate={navigate}>{page}</AppShell>;
 }
 

@@ -230,6 +230,31 @@ If local save succeeds but webhook fails, the UI shows:
 บันทึกในเครื่องแล้ว แต่ส่ง webhook ไม่สำเร็จ
 ```
 
+## PEA electricity bill extractor
+
+The `/electricity-bills` page is a separate workflow for Thai PEA electricity invoices.
+
+Recommended flow:
+
+1. Upload a PDF/image electricity bill.
+2. Typhoon OCR reads the document locally.
+3. The app extracts a fixed JSON schema for the invoice.
+4. The user reviews and edits JSON before saving.
+5. The app saves locally to `data/electricity-bills.jsonl`.
+6. If configured, the app posts the reviewed payload to Google Sheets.
+
+Set a separate webhook for this workflow:
+
+```zsh
+ELECTRICITY_BILL_WEBHOOK_URL=https://script.google.com/macros/s/xxxx/exec
+```
+
+Use `google-electricity-bill-apps-script.gs` as the Apps Script template for this sheet.
+
+Keep this separate from `GOOGLE_SHEET_WEBHOOK_URL` unless your Apps Script supports both ticket rows and electricity bill rows. Electricity bill payloads include nested `invoice` JSON plus flat fields such as `ca_ref_no`, `invoice_no`, `bill_period`, `total_kwh`, `subtotal`, `vat_amount`, `grand_total`, and validation flags.
+
+The extractor intentionally returns `null` and marks fields in `confidence.low_confidence_fields` when OCR is unclear. Users should review the JSON before sending it to Sheets.
+
 ## Chat Markdown support
 
 Assistant responses render GitHub-Flavored Markdown in the chat UI, including:

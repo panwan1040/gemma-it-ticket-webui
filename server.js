@@ -21,7 +21,9 @@ const llmBaseUrl = process.env.LLM_BASE_URL || 'http://127.0.0.1:18080/v1';
 const llmTimeoutMs = Math.max(5000, Math.min(Number(process.env.LLM_TIMEOUT_MS || 25000), 120000));
 let llmModel = process.env.LLM_MODEL || 'gemma4-e4b-qat';
 const sheetWebhookUrl = process.env.GOOGLE_SHEET_WEBHOOK_URL || '';
+const electricityBillWebhookUrl = process.env.ELECTRICITY_BILL_WEBHOOK_URL || '';
 const localLogPath = path.join(process.cwd(), 'data', 'tickets.jsonl');
+const electricityBillLogPath = path.join(process.cwd(), 'data', 'electricity-bills.jsonl');
 const ragIndexPath = path.join(process.cwd(), 'data', 'rag-index.json');
 const attachmentDir = path.join(process.cwd(), 'data', 'attachments');
 const adminAuditPath = path.join(process.cwd(), 'data', 'admin-audit.jsonl');
@@ -259,10 +261,110 @@ Instructions:
 - Return only clean Markdown.
 - Preserve Thai and English text exactly when possible.
 - Include all visible document information.
-- Tables must be rendered as GitHub-Flavored Markdown tables, not HTML.
+- Do not output HTML.
+- If the document is a form, bill, receipt, or table and the grid is uncertain, prefer simple "Field: Value" lines over a guessed table.
+- Use GitHub-Flavored Markdown tables only when row and column alignment is clearly visible.
 - If there are figures, charts, stamps, logos, or photos, wrap a short Thai description in <figure>...</figure>.
 - If text is unclear, mark it as [อ่านไม่ชัด] instead of guessing.
 - Do not include explanations outside the extracted Markdown.`;
+}
+
+function normalizeOcrText(value) {
+  return String(value || '')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/tr>/gi, '\n')
+    .replace(/<\/t[dh]>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/\s+\n/g, '\n')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function toNumber(value) {
+  const cleaned = String(value || '').replace(/,/g, '');
+  const number = Number(cleaned);
+  return Number.isFinite(number) ? number : null;
+}
+
+function formatMoney(value) {
+  return Number.isFinite(value) ? value.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '[ต้องตรวจทาน]';
+}
+
+function extractUtilityBill(text) {
+  const plain = normalizeOcrText(text);
+  const amountCandidates = [...plain.matchAll(/-?\d[\d,]*\.\d{2}(?!\d)/g)].map((match) => toNumber(match[0])).filter((value) => Number.isFinite(value));
+  const readingMatch = plain.match(/(\d[\d,]*\.\d{3})\s+(\d[\d,]*\.\d{3})\s+(\d[\d,]*\.\d{3})/);
+  const codeMatches = {
+    peaCode: plain.match(/\bG\d{4,}\b/)?.[0] || '',
+    mru: plain.match(/\b[A-Z]{4}\d{4}\b/)?.[0] || '',
+    meterNo: plain.match(/\b5\d{9}\b/)?.[0] || '',
+    dueDate: plain.match(/\b\d{1,2}\s*(?:ม\.ค\.|ก\.พ\.|มี\.ค\.|เม\.ย\.|พ\.ค\.|มิ\.ย\.|ก\.ค\.|ส\.ค\.|ก\.ย\.|ต\.ค\.|พ\.ย\.|ธ\.ค\.)\s*\d{4}\b/)?.[0] || '',
+    billPeriod: plain.match(/\b\d{2}\/25\d{2}\b/)?.[0] || ''
+  };
+  const twelveDigitNumbers = [...plain.matchAll(/\b\d{12}\b/g)].map((match) => match[0]);
+  const caRefNo1 = twelveDigitNumbers.find((item) => item.startsWith('02')) || twelveDigitNumbers[0] || '';
+  const invoiceNoRefNo2 = twelveDigitNumbers.find((item) => item !== caRefNo1 && item.startsWith('000')) || twelveDigitNumbers.find((item) => item !== caRefNo1) || '';
+  const amountDue = amountCandidates.at(-1) ?? null;
+  const vatByRate = Number.isFinite(amountDue) ? Number((amountDue * 7 / 107).toFixed(2)) : null;
+  const vat = Number.isFinite(vatByRate)
+    ? amountCandidates.find((value, index) => index < amountCandidates.length - 1 && Math.abs(value - vatByRate) <= 0.05) ?? null
+    : null;
+  const totalFromVat = Number.isFinite(amountDue) && Number.isFinite(vat) ? Number((amountDue - vat).toFixed(2)) : null;
+  const totalElectric = Number.isFinite(totalFromVat)
+    ? totalFromVat
+    : Number.isFinite(amountDue)
+      ? amountCandidates.find((value, index) => index < amountCandidates.length - 1 && value > 0 && value < amountDue && Math.abs((amountDue - value) - (value * 0.07)) <= 1) ?? null
+      : null;
+  const energy = amountCandidates.find((value) => value > 100 && value !== amountDue && (!Number.isFinite(totalElectric) || Math.abs(value - totalElectric) > 0.01)) ?? null;
+  const ft = amountCandidates.find((value) => value < 0) ?? null;
+  const serviceCandidate = Number.isFinite(totalElectric) && Number.isFinite(energy) && Number.isFinite(ft) ? Number((totalElectric - energy - ft).toFixed(2)) : null;
+  const service = Number.isFinite(serviceCandidate) && serviceCandidate >= 0 ? serviceCandidate : null;
+  const fields = [
+    ['ผู้ให้บริการ', /การไฟฟ้าส่วนภูมิภาค|Provincial Electricity Authority/i.test(plain) ? 'การไฟฟ้าส่วนภูมิภาค (PEA)' : '[ต้องตรวจทาน]'],
+    ['รหัสการไฟฟ้า (PEA Code)', codeMatches.peaCode || '[ต้องตรวจทาน]'],
+    ['สายจดหน่วย (MRU)', codeMatches.mru || '[ต้องตรวจทาน]'],
+    ['หมายเลขผู้ใช้ไฟฟ้า (CA/Ref. No. 1)', caRefNo1 || '[ต้องตรวจทาน]'],
+    ['เลขที่ใบแจ้งฯ (Ref. No. 2)', invoiceNoRefNo2 || '[ต้องตรวจทาน]'],
+    ['รหัสเครื่องวัด (PEA No.)', codeMatches.meterNo || '[ต้องตรวจทาน]'],
+    ['ประจำเดือน', codeMatches.billPeriod || '[ต้องตรวจทาน]'],
+    ['เลขอ่านครั้งหลัง', readingMatch ? readingMatch[1] : '[ต้องตรวจทาน]'],
+    ['เลขอ่านครั้งก่อน', readingMatch ? readingMatch[2] : '[ต้องตรวจทาน]'],
+    ['จำนวนหน่วยที่ใช้', readingMatch ? readingMatch[3] : '[ต้องตรวจทาน]'],
+    ['วันครบกำหนดชำระ', codeMatches.dueDate || '[ต้องตรวจทาน]']
+  ];
+  const charges = [
+    ['ค่าพลังงานไฟฟ้า', formatMoney(energy)],
+    ['ค่าบริการรายเดือน', formatMoney(service)],
+    ['ค่า Ft', formatMoney(ft)],
+    ['รวมเงินค่าไฟฟ้าก่อน VAT', formatMoney(totalElectric)],
+    ['ภาษีมูลค่าเพิ่ม 7%', formatMoney(vat)],
+    ['รวมเงินที่ต้องชำระ', formatMoney(amountDue)]
+  ];
+  const warnings = [];
+  if (!Number.isFinite(service)) warnings.push('ค่าบริการรายเดือนสกัดจาก OCR ไม่ชัดเจน ต้องตรวจทานจากภาพต้นฉบับ');
+  if (!readingMatch) warnings.push('เลขอ่านมิเตอร์/จำนวนหน่วยอาจอ่านไม่ครบ');
+  if (!codeMatches.dueDate) warnings.push('วันครบกำหนดชำระอาจอ่านไม่ชัด');
+  return [
+    '## สรุปข้อมูลที่สกัดได้ (ต้องตรวจทาน)',
+    '',
+    '| รายการ | ค่า |',
+    '|---|---|',
+    ...fields.map(([label, value]) => `| ${label} | ${value} |`),
+    '',
+    '## รายละเอียดค่าใช้จ่าย',
+    '',
+    '| รายการ | จำนวนเงิน (บาท) |',
+    '|---|---:|',
+    ...charges.map(([label, value]) => `| ${label} | ${value} |`),
+    '',
+    '## หมายเหตุ',
+    '',
+    '- ข้อมูลนี้สกัดจาก OCR อัตโนมัติ ควรเทียบกับภาพ/PDF ต้นฉบับก่อนใช้งานจริง',
+    ...warnings.map((item) => `- ${item}`)
+  ].join('\n');
 }
 
 async function writeTempUpload(file) {
@@ -345,6 +447,215 @@ async function parseWithTyphoonOcr(file) {
   } finally {
     await fs.rm(temp.dir, { recursive: true, force: true }).catch(() => {});
   }
+}
+
+function emptyElectricityInvoice() {
+  return {
+    document_info: { document_type: 'electricity_invoice', provider: 'PEA', document_date: null, printed_datetime: null },
+    customer_info: { customer_name: null, service_address: null, ca_ref_no: null, invoice_no: null },
+    billing_info: { bill_period: null, due_date: null, meter_reading_date: null, pea_code: null, mru: null, pea_no: null, type: null, voltage_level: null, multiplier: null },
+    demand: { peak_kw: null, off_peak_kw: null, holiday_kw: null },
+    energy: { peak_kwh: null, off_peak_kwh: null, holiday_kwh: null, total_kwh: null },
+    tariff_details: [
+      { item: 'peak_demand', quantity: null, unit: 'kw', rate: null, amount: null },
+      { item: 'off_peak_demand', quantity: null, unit: 'kw', rate: null, amount: null },
+      { item: 'peak_energy', quantity: null, unit: 'kwh', rate: null, amount: null },
+      { item: 'off_peak_energy', quantity: null, unit: 'kwh', rate: null, amount: null },
+      { item: 'service_charge', quantity: null, unit: null, rate: null, amount: null }
+    ],
+    amounts: { base_amount: null, ft_rate: null, ft_amount: null, discount: null, subtotal: null, vat_rate: null, vat_amount: null, current_month_total: null, grand_total: null },
+    usage_history: [],
+    payment_info: { barcode_text: null, qr_code_present: null },
+    validation: { base_plus_ft_minus_discount_equals_subtotal: null, subtotal_plus_vat_equals_grand_total: null, energy_sum_equals_total_kwh: null },
+    confidence: { overall: null, low_confidence_fields: [] }
+  };
+}
+
+function cleanNumber(value) {
+  if (value == null) return null;
+  const number = Number(String(value).replace(/,/g, '').replace(/[^\d.-]/g, ''));
+  return Number.isFinite(number) ? number : null;
+}
+
+function findNumberNear(text, labelRegex, windowSize = 220) {
+  const match = labelRegex.exec(text);
+  if (!match) return null;
+  const chunk = text.slice(match.index, match.index + windowSize);
+  const numbers = [...chunk.matchAll(/-?\d[\d,]*(?:\.\d+)?/g)].map((item) => cleanNumber(item[0])).filter(Number.isFinite);
+  return numbers.length ? numbers.at(-1) : null;
+}
+
+function findMoneyNear(text, labelRegex, windowSize = 220) {
+  const match = labelRegex.exec(text);
+  if (!match) return null;
+  const chunk = text.slice(match.index, match.index + windowSize);
+  const numbers = [...chunk.matchAll(/-?\d[\d,]*\.\d{2}(?!\d)/g)].map((item) => cleanNumber(item[0])).filter(Number.isFinite);
+  return numbers.length ? numbers[0] : null;
+}
+
+function findMoneyOnLine(text, labelRegex, pick = 'last') {
+  const line = text.split('\n').find((item) => labelRegex.test(item));
+  if (!line) return null;
+  const numbers = [...line.matchAll(/-?\d[\d,]*\.\d{2}(?!\d)/g)].map((item) => cleanNumber(item[0])).filter(Number.isFinite);
+  if (!numbers.length) return null;
+  return pick === 'first' ? numbers[0] : numbers.at(-1);
+}
+
+function findMoneyOnFilteredLine(text, includeRegex, excludeRegex = null, pick = 'last') {
+  const line = text.split('\n').find((item) => includeRegex.test(item) && (!excludeRegex || !excludeRegex.test(item)));
+  if (!line) return null;
+  const numbers = [...line.matchAll(/-?\d[\d,]*\.\d{2}(?!\d)/g)].map((item) => cleanNumber(item[0])).filter(Number.isFinite);
+  if (!numbers.length) return null;
+  return pick === 'first' ? numbers[0] : numbers.at(-1);
+}
+
+function findStringNear(text, labelRegex, valueRegex, windowSize = 260) {
+  const match = labelRegex.exec(text);
+  if (!match) return null;
+  const chunk = text.slice(match.index, match.index + windowSize);
+  return chunk.match(valueRegex)?.[0] || null;
+}
+
+function almostEqual(a, b, tolerance = 0.05) {
+  return Number.isFinite(a) && Number.isFinite(b) ? Math.abs(a - b) <= tolerance : null;
+}
+
+function setTariff(invoice, item, patch) {
+  const row = invoice.tariff_details.find((detail) => detail.item === item);
+  if (row) Object.assign(row, patch);
+}
+
+function finalizeElectricityInvoice(invoice) {
+  const low = [];
+  const walk = (value, prefix) => {
+    if (Array.isArray(value)) return value.forEach((item, index) => walk(item, `${prefix}.${index}`));
+    if (value && typeof value === 'object') {
+      for (const [key, child] of Object.entries(value)) {
+        if (key === 'validation' || key === 'confidence') continue;
+        walk(child, prefix ? `${prefix}.${key}` : key);
+      }
+      return;
+    }
+    if (value == null) low.push(prefix);
+  };
+  const discount = invoice.amounts.discount || 0;
+  invoice.validation.base_plus_ft_minus_discount_equals_subtotal = [invoice.amounts.base_amount, invoice.amounts.ft_amount, invoice.amounts.subtotal].every(Number.isFinite)
+    ? almostEqual(invoice.amounts.base_amount + invoice.amounts.ft_amount - discount, invoice.amounts.subtotal)
+    : null;
+  invoice.validation.subtotal_plus_vat_equals_grand_total = [invoice.amounts.subtotal, invoice.amounts.vat_amount, invoice.amounts.grand_total].every(Number.isFinite)
+    ? almostEqual(invoice.amounts.subtotal + invoice.amounts.vat_amount, invoice.amounts.grand_total)
+    : null;
+  invoice.validation.energy_sum_equals_total_kwh = [invoice.energy.peak_kwh, invoice.energy.off_peak_kwh, invoice.energy.holiday_kwh, invoice.energy.total_kwh].every(Number.isFinite)
+    ? almostEqual(invoice.energy.peak_kwh + invoice.energy.off_peak_kwh + invoice.energy.holiday_kwh, invoice.energy.total_kwh)
+    : null;
+  walk(invoice, '');
+  invoice.confidence.low_confidence_fields = [...new Set(low)].sort();
+  const important = [invoice.customer_info.ca_ref_no, invoice.customer_info.invoice_no, invoice.billing_info.bill_period, invoice.billing_info.due_date, invoice.billing_info.pea_no, invoice.energy.total_kwh, invoice.amounts.subtotal, invoice.amounts.vat_amount, invoice.amounts.grand_total];
+  let confidence = important.filter((item) => item != null && item !== '').length / important.length;
+  if (Object.values(invoice.validation).some((value) => value === false)) confidence = Math.min(confidence, 0.55);
+  invoice.confidence.overall = Number(confidence.toFixed(2));
+  return invoice;
+}
+
+function extractElectricityInvoiceJson(text) {
+  const plain = normalizeOcrText(text);
+  const invoice = emptyElectricityInvoice();
+  const twelveDigitNumbers = [...plain.matchAll(/\b\d{12}\b/g)].map((match) => match[0]);
+  const decimalAmounts = [...plain.matchAll(/-?\d[\d,]*\.\d{2}(?!\d)/g)].map((match) => cleanNumber(match[0])).filter(Number.isFinite);
+  invoice.customer_info.ca_ref_no = findStringNear(plain, /CA\/?Ref\.?\s*(?:No\.?\s*)?1|หมายเลขผู้ใช้ไฟฟ้า/i, /\b\d{10,12}\b/) || twelveDigitNumbers.find((item) => item.startsWith('02')) || null;
+  invoice.customer_info.invoice_no = findStringNear(plain, /Invoice\s*No|Ref\.?\s*No\.?\s*2|เลขที่ใบแจ้ง/i, /\b\d{8,14}\b/) || twelveDigitNumbers.find((item) => item !== invoice.customer_info.ca_ref_no && item.startsWith('000')) || null;
+  invoice.billing_info.pea_code = plain.match(/\bG\d{4,}\b/)?.[0] || null;
+  invoice.billing_info.mru = plain.match(/\b[A-Z]{3,6}\d{3,6}\b/)?.[0] || null;
+  invoice.billing_info.pea_no = findStringNear(plain, /PEA\s*No|รหัสเครื่องวัด/i, /\b\d{8,12}\b/) || plain.match(/\b5\d{9}\b/)?.[0] || null;
+  invoice.billing_info.type = findStringNear(plain, /\bType\b|ประเภท/i, /\b\d{3,5}\b/) || null;
+  invoice.billing_info.bill_period = plain.match(/\b\d{2}\/25\d{2}\b/)?.[0] || null;
+  invoice.billing_info.due_date = plain.match(/\b\d{1,2}\s*(?:ม\.ค\.|ก\.พ\.|มี\.ค\.|เม\.ย\.|พ\.ค\.|มิ\.ย\.|ก\.ค\.|ส\.ค\.|ก\.ย\.|ต\.ค\.|พ\.ย\.|ธ\.ค\.|มกราคม|กุมภาพันธ์|มีนาคม|เมษายน|พฤษภาคม|มิถุนายน|กรกฎาคม|สิงหาคม|กันยายน|ตุลาคม|พฤศจิกายน|ธันวาคม)\s*\d{4}\b/)?.[0] || null;
+  invoice.billing_info.meter_reading_date = plain.match(/\b\d{1,2}\/\d{1,2}\/\d{2,4}(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?\b/)?.[0] || null;
+  invoice.billing_info.multiplier = findNumberNear(plain, /ตัวคูณ|Multiplier/i, 140);
+  invoice.billing_info.voltage_level = findStringNear(plain, /แรงดัน|Voltage/i, /\d+(?:\.\d+)?\s*(?:kV|KV|โวลต์|volt)/i) || null;
+  const readingMatch = plain.match(/(\d[\d,]*\.\d{3})\s+(\d[\d,]*\.\d{3})\s+(\d[\d,]*\.\d{3})/);
+  if (readingMatch) invoice.energy.total_kwh = cleanNumber(readingMatch[3]);
+  invoice.energy.peak_kwh = findNumberNear(plain, /(?:On\s*Peak|Peak|ช่วงเวลา\s*Peak|พลังงานไฟฟ้า.*?Peak)/i);
+  invoice.energy.off_peak_kwh = findNumberNear(plain, /(?:Off\s*Peak|Offpeak|ช่วงเวลา\s*Off|พลังงานไฟฟ้า.*?Off)/i);
+  invoice.energy.holiday_kwh = findNumberNear(plain, /(?:Holiday|วันหยุด)/i);
+  invoice.demand.peak_kw = findNumberNear(plain, /(?:Peak\s*(?:Demand|kW)|ความต้องการพลังไฟฟ้า.*?Peak)/i);
+  invoice.demand.off_peak_kw = findNumberNear(plain, /(?:Off\s*Peak\s*(?:Demand|kW)|ความต้องการพลังไฟฟ้า.*?Off)/i);
+  invoice.demand.holiday_kw = findNumberNear(plain, /(?:Holiday\s*(?:Demand|kW)|ความต้องการพลังไฟฟ้า.*?วันหยุด)/i);
+  setTariff(invoice, 'peak_demand', { quantity: invoice.demand.peak_kw });
+  setTariff(invoice, 'off_peak_demand', { quantity: invoice.demand.off_peak_kw });
+  setTariff(invoice, 'peak_energy', { quantity: invoice.energy.peak_kwh });
+  setTariff(invoice, 'off_peak_energy', { quantity: invoice.energy.off_peak_kwh });
+  invoice.amounts.grand_total = findMoneyOnLine(plain, /Grand\s*Total|รวมเงินทั้งสิ้น/i)
+    ?? findMoneyOnLine(plain, /รวมเงินค่าไฟฟ้าเดือนปัจจุบัน|Current\s*Month\s*Total/i)
+    ?? findMoneyOnLine(plain, /จำนวนเงิน.*Total/i)
+    ?? findMoneyNear(plain, /รวมเงินที่ต้องชำระ/i)
+    ?? decimalAmounts.at(-1)
+    ?? null;
+  invoice.amounts.vat_amount = findMoneyOnLine(plain, /ภาษีมูลค่าเพิ่ม|VAT/i);
+  invoice.amounts.vat_rate = /(?:VAT|ภาษีมูลค่าเพิ่ม)[^\n]*7(?:\.00)?\s*%|7(?:\.00)?\s*%[^\n]*(?:VAT|ภาษีมูลค่าเพิ่ม)/i.test(plain) ? 7 : null;
+  invoice.amounts.ft_rate = cleanNumber(plain.match(/(?:Ft|เอฟที)[^\n=]*=\s*([+-]?\d+(?:\.\d+)?)/i)?.[1] || plain.match(/(?:Ft|เอฟที)\s*([+-]?\d+(?:\.\d+)?)/i)?.[1]);
+  invoice.amounts.ft_amount = findMoneyOnLine(plain, /(?:Ft|เอฟที)/i) ?? decimalAmounts.find((value) => value < 0) ?? findMoneyNear(plain, /(?:Ft|เอฟที)/i);
+  invoice.amounts.discount = findMoneyOnLine(plain, /ส่วนลด|Discount/i) ?? 0;
+  invoice.amounts.subtotal = findMoneyOnFilteredLine(plain, /Sub\s*Total|รวมเงินค่าไฟฟ้า/i, /ฐาน|Based/i);
+  if (invoice.amounts.subtotal == null && Number.isFinite(invoice.amounts.grand_total) && Number.isFinite(invoice.amounts.vat_amount)) invoice.amounts.subtotal = Number((invoice.amounts.grand_total - invoice.amounts.vat_amount).toFixed(2));
+  invoice.amounts.current_month_total = invoice.amounts.grand_total;
+  invoice.amounts.base_amount = findMoneyOnLine(plain, /เงินค่าไฟฟ้าฐาน|Based\s*Amount|ค่าพลังงานไฟฟ้า|ค่าความต้องการพลังไฟฟ้า/i);
+  setTariff(invoice, 'service_charge', { amount: findMoneyOnLine(plain, /ค่าบริการรายเดือน|Service\s*Charge/i) });
+  invoice.usage_history = [...plain.matchAll(/(\d{1,2}\/\d{1,2}\/\d{2,4})\s+(\d[\d,]*)/g)].slice(0, 12).map((match) => ({ meter_reading_date: match[1], consumption_unit: cleanNumber(match[2]) }));
+  invoice.payment_info.barcode_text = plain.match(/\b\d{12,}\s+\d{8,}\s+\d{4,}\s+\d+\b/)?.[0] || plain.match(/\b\d{20,}\b/)?.[0] || null;
+  invoice.payment_info.qr_code_present = /QR|คิวอาร์/i.test(plain) ? true : null;
+  return finalizeElectricityInvoice(invoice);
+}
+
+function flattenElectricityInvoice(invoice) {
+  return {
+    document_type: invoice.document_info.document_type,
+    provider: invoice.document_info.provider,
+    customer_name: invoice.customer_info.customer_name,
+    service_address: invoice.customer_info.service_address,
+    ca_ref_no: invoice.customer_info.ca_ref_no,
+    invoice_no: invoice.customer_info.invoice_no,
+    bill_period: invoice.billing_info.bill_period,
+    due_date: invoice.billing_info.due_date,
+    meter_reading_date: invoice.billing_info.meter_reading_date,
+    pea_code: invoice.billing_info.pea_code,
+    mru: invoice.billing_info.mru,
+    pea_no: invoice.billing_info.pea_no,
+    type: invoice.billing_info.type,
+    total_kwh: invoice.energy.total_kwh,
+    base_amount: invoice.amounts.base_amount,
+    ft_rate: invoice.amounts.ft_rate,
+    ft_amount: invoice.amounts.ft_amount,
+    discount: invoice.amounts.discount,
+    subtotal: invoice.amounts.subtotal,
+    vat_rate: invoice.amounts.vat_rate,
+    vat_amount: invoice.amounts.vat_amount,
+    grand_total: invoice.amounts.grand_total,
+    validation_subtotal_plus_vat: invoice.validation.subtotal_plus_vat_equals_grand_total,
+    confidence_overall: invoice.confidence.overall,
+    low_confidence_fields: invoice.confidence.low_confidence_fields.join(', ')
+  };
+}
+
+async function saveElectricityBill({ invoice, sourceName = '', ocrText = '' }) {
+  const timestamp = new Date().toISOString();
+  const row = { timestamp, sourceName, ...flattenElectricityInvoice(invoice), invoice, ocrText: String(ocrText || '').slice(0, 12000) };
+  await fs.mkdir(path.dirname(electricityBillLogPath), { recursive: true });
+  await fs.appendFile(electricityBillLogPath, `${JSON.stringify(row)}\n`, 'utf8');
+  const result = { row, localSaved: true, webhookEnabled: Boolean(electricityBillWebhookUrl), webhookOk: false, webhookError: '' };
+  if (electricityBillWebhookUrl) {
+    try {
+      const response = await fetch(electricityBillWebhookUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(row) });
+      if (!response.ok) {
+        const body = await response.text();
+        throw new Error(`Electricity bill webhook HTTP ${response.status}: ${body.slice(0, 200)}`);
+      }
+      result.webhookOk = true;
+    } catch (error) {
+      result.webhookError = error.message;
+    }
+  }
+  return result;
 }
 
 async function getTyphoonOcrStatus() {
@@ -704,6 +1015,10 @@ app.get('/admin', requireAdmin, (_req, res) => {
 });
 
 app.get('/knowledge-chat', (_req, res) => {
+  res.sendFile(path.join(staticDir, 'index.html'));
+});
+
+app.get('/electricity-bills', (_req, res) => {
   res.sendFile(path.join(staticDir, 'index.html'));
 });
 
@@ -1089,6 +1404,80 @@ app.post('/api/attachments', uploadLimiter, async (req, res) => {
   }
 });
 
+app.post('/api/ocr/structure', uploadLimiter, async (req, res) => {
+  try {
+    const text = String(req.body?.text || '');
+    const documentType = String(req.body?.documentType || 'general');
+    if (!text.trim()) {
+      res.status(400).json({ error: 'text is required' });
+      return;
+    }
+    if (documentType === 'utility_bill') {
+      res.json({ ok: true, documentType, structuredText: extractUtilityBill(text) });
+      return;
+    }
+    const plain = normalizeOcrText(text);
+    const preview = plain.split('\n').map((line) => line.trim()).filter(Boolean).slice(0, 30);
+    res.json({
+      ok: true,
+      documentType,
+      structuredText: [
+        '## สรุปข้อความ OCR (ต้องตรวจทาน)',
+        '',
+        ...preview.map((line) => `- ${line.slice(0, 220)}`),
+        '',
+        '## หมายเหตุ',
+        '',
+        '- เลือกประเภทเอกสารเป็น “บิล/ใบแจ้งหนี้” หากต้องการแยกช่องยอดเงินและข้อมูลอ้างอิง'
+      ].join('\n')
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/electricity-bills/extract', uploadLimiter, async (req, res) => {
+  try {
+    let ocrText = String(req.body?.ocrText || '');
+    let sourceName = String(req.body?.sourceName || 'manual-ocr');
+    const file = req.body?.file;
+    if (!ocrText.trim() && file && typeof file === 'object') {
+      if (!isOcrSupportedFile(file.name, file.type)) {
+        res.status(400).json({ error: 'รองรับเฉพาะ PDF, PNG, JPG, JPEG, WEBP สำหรับอ่านบิลค่าไฟ' });
+        return;
+      }
+      const status = await getTyphoonOcrStatus();
+      if (!status.available) await startTyphoonOcrWorker();
+      const note = await parseWithTyphoonOcr(file);
+      ocrText = note.content || '';
+      sourceName = String(file.name || sourceName);
+    }
+    if (!ocrText.trim()) {
+      res.status(400).json({ error: 'file or ocrText is required' });
+      return;
+    }
+    const invoice = extractElectricityInvoiceJson(ocrText);
+    res.json({ ok: true, sourceName, ocrText, invoice, flat: flattenElectricityInvoice(invoice), sheetEnabled: Boolean(electricityBillWebhookUrl) });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/electricity-bills/save', ticketLimiter, async (req, res) => {
+  try {
+    const invoice = req.body?.invoice;
+    if (!invoice || typeof invoice !== 'object') {
+      res.status(400).json({ error: 'invoice is required' });
+      return;
+    }
+    const finalized = finalizeElectricityInvoice(invoice);
+    const result = await saveElectricityBill({ invoice: finalized, sourceName: req.body?.sourceName || '', ocrText: req.body?.ocrText || '' });
+    res.json({ ok: true, saved: result.row, localSaved: result.localSaved, sheetEnabled: result.webhookEnabled, webhookOk: result.webhookOk, webhookError: result.webhookError });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.get('/api/rag/search', requireAdmin, async (req, res) => {
   const q = String(req.query.q || '');
   res.json(await searchKnowledge(q));
@@ -1230,4 +1619,4 @@ if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(im
   });
 }
 
-export { app, safeKnowledgePath, safeAttachmentName, generateTicketId, fallbackTriage, inferCategory, searchKnowledge, requireAdmin };
+export { app, safeKnowledgePath, safeAttachmentName, generateTicketId, fallbackTriage, inferCategory, searchKnowledge, requireAdmin, extractUtilityBill, extractElectricityInvoiceJson };
