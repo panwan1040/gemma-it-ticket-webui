@@ -901,47 +901,52 @@ function OcrStudioPage() {
   const [notice, setNotice] = useState('ลาก PDF/รูปภาพ/ไฟล์ข้อความมาวาง หรือกดเลือกไฟล์เพื่อ OCR');
   const selected = items.find((item) => item.id === selectedId) || items[0] || null;
   const readableItems = items.filter((item) => item.ocrText?.trim());
+  const selectedIsLoading = selected && ['queued', 'processing'].includes(selected.status);
+  const selectedHasError = selected && ['error', 'unreadable'].includes(selected.status) && !selected.ocrText;
 
   function updateItem(id, patch) {
     setItems((current) => current.map((item) => item.id === id ? { ...item, ...patch } : item));
+  }
+  async function readOcrItem(file, id) {
+    updateItem(id, { status: 'processing', error: '' });
+    try {
+      const textLike = /\.(txt|md|markdown|csv|json)$/i.test(file.name) || String(file.type || '').startsWith('text/');
+      if (textLike) {
+        const text = await file.text();
+        updateItem(id, { status: 'readable', ocrText: text, attachment: null, error: '' });
+        return;
+      }
+      const base64 = await readFileAsBase64(file);
+      const response = await fetch('/api/attachments', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ file: { name: file.name, type: file.type, base64 } })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'OCR failed');
+      const attachment = data.attachment;
+      updateItem(id, {
+        status: attachment.ocrStatus || (attachment.ocrOk ? 'readable' : 'unreadable'),
+        ocrText: attachment.ocrText || '',
+        error: attachment.ocrError || '',
+        attachment
+      });
+    } catch (error) {
+      updateItem(id, { status: 'error', error: error.message });
+    }
   }
   async function processFiles(fileList) {
     const files = Array.from(fileList || []).filter((file) => file && file.size > 0);
     if (!files.length || busy) return;
     setBusy(true);
     setNotice(`กำลังอ่านข้อความจาก ${files.length} ไฟล์...`);
-    const initial = files.map((file) => ({ id: crypto.randomUUID?.() || `${Date.now()}-${file.name}`, name: file.name, size: file.size, type: file.type, status: 'queued', ocrText: '', structuredText: '', error: '' }));
+    const initial = files.map((file) => ({ id: crypto.randomUUID?.() || `${Date.now()}-${file.name}`, name: file.name, size: file.size, type: file.type, sourceFile: file, status: 'queued', ocrText: '', structuredText: '', error: '' }));
     setItems((current) => [...initial, ...current]);
     setSelectedId(initial[0].id);
     for (let index = 0; index < files.length; index += 1) {
       const file = files[index];
       const id = initial[index].id;
-      updateItem(id, { status: 'processing' });
-      try {
-        const textLike = /\.(txt|md|markdown|csv|json)$/i.test(file.name) || String(file.type || '').startsWith('text/');
-        if (textLike) {
-          const text = await file.text();
-          updateItem(id, { status: 'readable', ocrText: text, attachment: null });
-          continue;
-        }
-        const base64 = await readFileAsBase64(file);
-        const response = await fetch('/api/attachments', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ file: { name: file.name, type: file.type, base64 } })
-        });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error || 'OCR failed');
-        const attachment = data.attachment;
-        updateItem(id, {
-          status: attachment.ocrStatus || (attachment.ocrOk ? 'readable' : 'unreadable'),
-          ocrText: attachment.ocrText || '',
-          error: attachment.ocrError || '',
-          attachment
-        });
-      } catch (error) {
-        updateItem(id, { status: 'error', error: error.message });
-      }
+      await readOcrItem(file, id);
     }
     setNotice('อ่านข้อความเสร็จแล้ว ตรวจผลก่อน copy หรือ export');
     setBusy(false);
@@ -1011,6 +1016,14 @@ function OcrStudioPage() {
     if (!selected?.ocrText) return;
     goToKnowledgeChat({ name: selected.name, ocrText: selected.ocrText });
   }
+  async function retrySelected() {
+    if (!selected?.sourceFile || busy) return;
+    setBusy(true);
+    setNotice(`กำลังลองอ่าน ${selected.name} อีกครั้ง...`);
+    await readOcrItem(selected.sourceFile, selected.id);
+    setNotice('ลองอ่านไฟล์อีกครั้งแล้ว ตรวจผลด้านขวา');
+    setBusy(false);
+  }
 
   return <div className="page ocr-page">
     <PageTop
@@ -1027,14 +1040,14 @@ function OcrStudioPage() {
           <input type="file" multiple onChange={(event) => processFiles(event.target.files)} />
         </label>
         <div className="notice">{notice}</div>
-        <div className="ocr-file-list">{items.length ? items.map((item) => <button key={item.id} className={cn('ocr-file', selected?.id === item.id && 'active')} onClick={() => setSelectedId(item.id)}>
-          <FileText size={16} />
+        <div className="ocr-file-list">{items.length ? items.map((item) => <button key={item.id} className={cn('ocr-file', `ocr-file-${item.status || 'queued'}`, selected?.id === item.id && 'active')} onClick={() => setSelectedId(item.id)}>
+          {item.status === 'processing' ? <Loader2 className="spin" size={16} /> : <FileText size={16} />}
           <span><strong>{item.name}</strong><small>{statusText(item)} · {formatBytes(item.size)}</small></span>
-        </button>) : <EmptyState icon={FileText} title="ยังไม่มีไฟล์" description="เลือกไฟล์เพื่อเริ่ม OCR แล้วผลลัพธ์จะแสดงด้านขวา" />}</div>
+        </button>) : <EmptyState icon={FileText} title="ยังไม่มีไฟล์" description="ลากไฟล์มาวาง หรือเลือกไฟล์เพื่อเริ่ม OCR" />}</div>
       </aside>
       <main className="ocr-result">
         {selected ? <Card className="ocr-editor">
-          <div className="sheet-head"><div><h2>{selected.name}</h2><p>{statusText(selected)}{selected.error ? ` · ${selected.error}` : ''}</p></div><StatusPill tone={selected.status === 'readable' ? 'ok' : selected.status === 'processing' ? 'info' : selected.status === 'error' || selected.status === 'unreadable' ? 'warning' : 'neutral'}>{statusText(selected)}</StatusPill></div>
+          <div className="sheet-head ocr-editor-head"><div><h2>{selected.name}</h2><p>{statusText(selected)}{selected.error ? ` · ${selected.error}` : ''}</p></div><StatusPill tone={selected.status === 'readable' ? 'ok' : selected.status === 'processing' ? 'info' : selected.status === 'error' || selected.status === 'unreadable' ? 'warning' : 'neutral'}>{statusText(selected)}</StatusPill></div>
           <div className="ocr-tools">
             <label><span>ประเภทเอกสาร</span><select value={documentType} onChange={(event) => setDocumentType(event.target.value)}>
               <option value="utility_bill">บิล/ใบแจ้งหนี้</option>
@@ -1042,7 +1055,18 @@ function OcrStudioPage() {
             </select></label>
             <Button variant="secondary" disabled={!selected.ocrText || structuring} onClick={structureSelected}>{structuring ? <Loader2 className="spin" size={16} /> : <Database size={16} />}สกัดข้อมูลสำคัญ</Button>
           </div>
-          <textarea value={selected.ocrText || ''} onChange={(event) => setSelectedText(event.target.value)} placeholder="ผล OCR จะแสดงที่นี่ และสามารถแก้ไขก่อน export ได้" />
+          <div className="ocr-text-panel">
+            {selectedIsLoading ? <div className="ocr-panel-state">
+              <Loader2 className="spin" size={28} />
+              <strong>กำลังอ่านข้อความจากไฟล์...</strong>
+              <span>อาจใช้เวลาสักครู่ ขึ้นอยู่กับขนาดไฟล์</span>
+            </div> : selectedHasError ? <div className="ocr-panel-state ocr-panel-error">
+              <AlertCircle size={28} />
+              <strong>อ่านไฟล์ไม่สำเร็จ</strong>
+              <span>{selected.error || 'ระบบยังอ่านข้อความจากไฟล์นี้ไม่ได้'}</span>
+              <Button variant="secondary" disabled={!selected.sourceFile || busy} onClick={retrySelected}><RefreshCcw size={16} />ลองใหม่</Button>
+            </div> : <textarea aria-label="ผลลัพธ์ OCR" value={selected.ocrText || ''} onChange={(event) => setSelectedText(event.target.value)} placeholder="ผล OCR จะแสดงที่นี่ และสามารถแก้ไขก่อน export ได้" />}
+          </div>
           {selected.structuredText ? <div className="ocr-structured">
             <div className="section-label"><strong>ข้อมูลสำคัญที่สกัดได้</strong><span>ใช้เป็น draft เท่านั้น ต้องตรวจทานกับไฟล์ต้นฉบับก่อนนำไปใช้งานจริง</span></div>
             <MarkdownMessage>{selected.structuredText}</MarkdownMessage>
@@ -1053,7 +1077,7 @@ function OcrStudioPage() {
             <Button variant="secondary" disabled={!selected.ocrText} onClick={exportSelectedTxt}><Download size={16} />TXT</Button>
             <Button variant="secondary" disabled={!selected.ocrText} onClick={sendSelectedToAi}><BookOpen size={16} />ส่งไปแชท AI</Button>
           </div>
-        </Card> : <EmptyState icon={FileText} title="เลือกไฟล์เพื่อ OCR" description="ผลลัพธ์จะแสดงเป็นข้อความที่ copy, แก้ไข และ export ได้" />}
+        </Card> : <div className="ocr-empty-workspace"><EmptyState icon={FileText} title="ยังไม่มีไฟล์" description="ลากไฟล์มาวาง หรือเลือกไฟล์เพื่อเริ่ม OCR" /></div>}
       </main>
     </section>
   </div>;
