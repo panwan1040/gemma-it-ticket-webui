@@ -56,7 +56,7 @@ const publicNavItems = [
 ];
 const routeItems = [
   ...publicNavItems,
-  { path: '/admin', label: 'จัดการคลังความรู้', description: 'เพิ่มเอกสารให้ AI อ้างอิง', icon: Archive }
+  { path: '/admin', label: 'Tickets / Knowledge', description: 'ดู ticket และจัดการคลังความรู้', icon: Archive }
 ];
 
 const urgencyOptions = ['Low', 'Medium', 'High', 'Critical'];
@@ -326,7 +326,7 @@ function AppShell({ config, path, navigate, children }) {
       <div className="feature-links">
         <button onClick={() => navigate('/ocr')} className={path === '/ocr' ? 'active' : ''}><FileText size={15} />OCR Studio</button>
         <button onClick={() => navigate('/electricity-bills')} className={path === '/electricity-bills' ? 'active' : ''}><Database size={15} />บิลค่าไฟ</button>
-        <button onClick={() => navigate('/admin')} className={path === '/admin' ? 'active' : ''}><Archive size={15} />Knowledge</button>
+        <button onClick={() => { sessionStorage.setItem('admin-tab', 'tickets'); navigate('/admin'); }} className={path === '/admin' ? 'active' : ''}><Archive size={15} />Tickets</button>
       </div>
       <div className="nav-foot">
         <span>{config.appName}</span>
@@ -573,6 +573,14 @@ function nextMissingLabel(ticket, missingFields) {
   if (ticket['ปัญหา'] && !ticket.contact) return 'เบอร์ติดต่อกลับ';
   return missingFields?.[0] || 'ข้อมูลเพิ่มเติมถ้ามี';
 }
+function inferTicketCategoryFromText(text) {
+  if (/ปริ้น|ปริน|printer|พิมพ์|เครื่องพิมพ์/i.test(text)) return 'Printer';
+  if (/wifi|wi-fi|network|internet|vpn|เน็ต|ไวไฟ|lan/i.test(text)) return 'Network';
+  if (/กล้อง|cctv|nvr|dvr/i.test(text)) return 'CCTV/NVR';
+  if (/บัญชี|account|password|mfa|login|ล็อกอิน/i.test(text)) return 'Account';
+  if (/จอ|monitor|signal|hdmi|displayport|คอม|notebook|pc|windows|mac/i.test(text)) return 'Computer';
+  return 'Other';
+}
 
 function TicketSummarySheet({ open, onClose, ticket, setTicket, missingFields, saveTicket, isSaving, saveState, saveStatus, attachments = [] }) {
   const update = (field, value) => setTicket((current) => ({ ...current, [field]: value }));
@@ -586,7 +594,7 @@ function TicketSummarySheet({ open, onClose, ticket, setTicket, missingFields, s
     <button className="sheet-backdrop" onClick={onClose} aria-label="ปิดสรุปข้อมูล" />
     <motion.aside className="ticket-sheet" initial={{ y: 28, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 28, opacity: 0 }} transition={{ type: 'spring', damping: 26, stiffness: 280 }}>
       <div className="sheet-head">
-        <div><h2>สรุปข้อมูล</h2><p>ตรวจและแก้ไขก่อนบันทึกใบงาน</p></div>
+        <div><h2>ร่าง Ticket</h2><p>ตรวจข้อมูล แล้วกด “บันทึกใบงาน” เพื่อเปิด ticket จริง</p></div>
         <IconButton label="ปิด" onClick={onClose}><X size={18} /></IconButton>
       </div>
       <div className="ready-list">
@@ -610,7 +618,8 @@ function TicketSummarySheet({ open, onClose, ticket, setTicket, missingFields, s
       <SelectField label="ระดับความเร่งด่วน" value={ticket['ระดับความเร่งด่วน']} onChange={(value) => update('ระดับความเร่งด่วน', value)} options={urgencyOptions} />
       {missingFields.length ? <div className="soft-note"><strong>ข้อมูลที่อาจถามเพิ่ม</strong><span>{missingFields.join(', ')}</span></div> : null}
       {saveStatus ? <div className={cn('save-note', saveState)}>{saveStatus}</div> : null}
-      <Button className="wide" disabled={!ticket['ปัญหา'] || isSaving || saveState === 'saved'} onClick={saveTicket}>{isSaving ? <Loader2 className="spin" size={16} /> : <Save size={16} />}{saveState === 'saved' ? 'บันทึกแล้ว' : 'บันทึกใบงาน'}</Button>
+      {!ticket['ปัญหา'] ? <div className="save-note error">กรอกช่อง “ปัญหา” อย่างน้อย 1 รายการก่อนเปิด ticket จริง</div> : null}
+      <Button className="wide" disabled={!ticket['ปัญหา'] || isSaving || saveState === 'saved'} onClick={saveTicket}>{isSaving ? <Loader2 className="spin" size={16} /> : <Save size={16} />}{saveState === 'saved' ? 'บันทึกแล้ว' : 'บันทึกใบงาน / เปิด Ticket'}</Button>
     </motion.aside>
   </motion.div> : null}</AnimatePresence>;
 }
@@ -752,6 +761,7 @@ function TicketIntakePage({ config }) {
           setMode(data.mode || 'done');
           setMissingFields(data.missingFields || []);
           setLastAgentReply(data.answer || data.agentReply || '');
+          setHandoffNotice('AI ร่าง Ticket ให้แล้ว กด “ดูร่าง / เปิด Ticket” เพื่อตรวจและบันทึกจริง');
           if (options.openDraft) {
             setHandoffNotice('ร่างใบงานจากแชท AI แล้ว แต่ยังไม่ได้บันทึกเป็น ticket จริง จนกว่าจะกด “บันทึกใบงาน”');
             setSheetOpen(true);
@@ -767,6 +777,26 @@ function TicketIntakePage({ config }) {
   }
   async function sendMessage() {
     await submitTicketMessage(input);
+  }
+  function openTicketDraft() {
+    const lastUser = [...messages].reverse().find((item) => item.role === 'user')?.content || input.trim();
+    const attachmentText = conversationAttachments.map((item) => item.name).filter(Boolean).join(', ');
+    const problem = ticket['ปัญหา'] || lastUser || (attachmentText ? `ตรวจสอบไฟล์แนบ: ${attachmentText}` : '');
+    if (problem) {
+      setTicket((current) => ({
+        ...current,
+        'ประเภท': current['ประเภท'] || inferTicketCategoryFromText(problem),
+        'ปัญหา': current['ปัญหา'] || problem,
+        'ผลกระทบ': current['ผลกระทบ'] || 'รอทีม IT ตรวจสอบและประเมินผลกระทบ',
+        'ข้อมูลที่ได้รับ': current['ข้อมูลที่ได้รับ'] || [lastUser, attachmentText ? `ไฟล์แนบ: ${attachmentText}` : ''].filter(Boolean).join('\n'),
+        'ระดับความเร่งด่วน': current['ระดับความเร่งด่วน'] || 'Medium',
+        'ทีมที่เกี่ยวข้อง': current['ทีมที่เกี่ยวข้อง'] || 'IT Support'
+      }));
+    }
+    setHandoffNotice(problem
+      ? 'ร่าง Ticket พร้อมตรวจแล้ว กด “บันทึกใบงาน / เปิด Ticket” เพื่อบันทึกจริง'
+      : 'เปิดร่าง Ticket แล้ว กรอกช่อง “ปัญหา” อย่างน้อยก่อนบันทึกจริง');
+    setSheetOpen(true);
   }
   useEffect(() => {
     const raw = sessionStorage.getItem('ticket-handoff');
@@ -808,7 +838,7 @@ function TicketIntakePage({ config }) {
         const okText = `${data.sheetEnabled ? 'บันทึกใบงานและส่งต่อเรียบร้อยแล้ว' : 'บันทึกใบงานในเครื่องแล้ว'}${ticketId ? ` (${ticketId})` : ''}`;
         setSaveState('saved');
         setSaveStatus(okText);
-        setMessages((current) => [...current, { role: 'assistant', content: `ทางทีม IT ได้ข้อมูลครบถ้วนแล้วครับ จะเปิดใบงานและติดต่อกลับอีกครั้ง${ticketId ? `\n\nTicket ID: ${ticketId}` : ''}\n\n${buildChatSummary(ticket, [], true, okText)}\n\nหากมีข้อมูลเพิ่มเติม แจ้งเพิ่มได้เลยครับ` }]);
+        setMessages((current) => [...current, { role: 'assistant', content: `เปิด Ticket เรียบร้อยแล้วครับ${ticketId ? `\n\nTicket ID: ${ticketId}` : ''}\n\nดูรายการ ticket ที่บันทึกแล้วได้จากเมนู **Tickets** ด้านซ้าย แล้วเลือก tab **Tickets**\n\n${buildChatSummary(ticket, [], true, okText)}\n\nหากมีข้อมูลเพิ่มเติม แจ้งเพิ่มได้เลยครับ` }]);
         setSheetOpen(false);
       }
     } catch (error) {
@@ -836,9 +866,10 @@ function TicketIntakePage({ config }) {
   return <ChatLayout
     topActions={<>
       <StatusPill tone={mode === 'error' ? 'danger' : mode === 'thinking' ? 'info' : 'ok'}>{friendlyStatus(mode)}</StatusPill>
+      <Button variant="secondary" size="sm" onClick={openTicketDraft}><ClipboardList size={15} />ดูร่าง / เปิด Ticket</Button>
       <IconButton label="เปิดเคสใหม่" onClick={resetChat}><RefreshCcw size={17} /></IconButton>
     </>}
-    notice={handoffNotice ? <div className="handoff-banner"><strong>ร่างใบงาน</strong><span>{handoffNotice}</span><Button variant="secondary" size="sm" onClick={() => setSheetOpen(true)}>ดูร่างใบงาน</Button></div> : null}
+    notice={handoffNotice ? <div className="handoff-banner"><strong>ร่าง Ticket</strong><span>{handoffNotice}</span><Button variant="secondary" size="sm" onClick={openTicketDraft}>ดูร่าง / เปิด Ticket</Button></div> : null}
     composer={<Composer value={input} onChange={setInput} onSend={sendMessage} disabled={(!input.trim() && !attachments.length) || isThinking} placeholder="Send a message" helper="แนบ screenshot, PDF, log, txt, json หรือรูปถ่ายอุปกรณ์ได้" compact onFiles={uploadTicketFiles} onRemoveAttachment={removeTicketAttachment} attachments={attachments} uploading={uploadingAttachment} busy={isThinking} />}
   >
       <MessageList
@@ -853,8 +884,8 @@ function TicketIntakePage({ config }) {
           <div className="chip-row">{examples.map((item) => <button key={item} onClick={() => setInput(item)}>{item}</button>)}</div>
         </EmptyState>}
       />
-      {summary ? <motion.button className="summary-bar" onClick={() => setSheetOpen(true)} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
-        <span><strong>สรุปข้อมูล</strong><small>{ticket['ปัญหา'] || `ควรถามเพิ่ม: ${nextMissingLabel(ticket, missingFields)}`}</small></span>
+      {summary ? <motion.button className="summary-bar" onClick={openTicketDraft} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
+        <span><strong>ดูร่าง / เปิด Ticket</strong><small>{ticket['ปัญหา'] || `ควรถามเพิ่ม: ${nextMissingLabel(ticket, missingFields)}`}</small></span>
         <ChevronRight size={18} />
       </motion.button> : null}
     <TicketSummarySheet open={sheetOpen} onClose={() => setSheetOpen(false)} ticket={ticket} setTicket={setTicket} missingFields={missingFields} saveTicket={saveTicket} isSaving={isSaving} saveState={saveState} saveStatus={saveStatus} attachments={conversationAttachments} />
@@ -1354,7 +1385,11 @@ function DocumentLibraryPage() {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState({ tone: 'neutral', text: 'ลากไฟล์มาวางเพื่อเพิ่มเข้าคลังความรู้ได้เลย' });
   const [ocr, setOcr] = useState({ available: false, detail: 'ยังไม่ได้ตรวจสอบการอ่านข้อความจากไฟล์' });
-  const [adminTab, setAdminTab] = useState('knowledge');
+  const [adminTab, setAdminTab] = useState(() => {
+    const requested = sessionStorage.getItem('admin-tab');
+    sessionStorage.removeItem('admin-tab');
+    return requested === 'tickets' ? 'tickets' : 'knowledge';
+  });
 
   const authHeaders = () => (auth ? { Authorization: `Basic ${btoa(auth)}` } : {});
   async function api(path, options = {}) {
