@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -90,6 +90,7 @@ const statusCopy = {
   done: 'พร้อมรับเรื่อง',
   error: 'เกิดข้อผิดพลาด',
   'local-gemma': 'พร้อมรับเรื่อง',
+  'ollama-stream': 'พร้อมรับเรื่อง',
   'fallback-rules': 'ระบบสำรองพร้อมใช้งาน',
   'fallback-rag': 'ใช้การค้นหาแบบสำรอง',
   'empty-knowledge': 'ยังไม่มีเอกสารในคลัง',
@@ -121,6 +122,11 @@ function formatBytes(size = 0) {
   return `${(size / 1024 / 1024).toFixed(1)} MB`;
 }
 function attachmentStatusLabel(file = {}) {
+  if (file.uploadState === 'selected') return 'เลือกไฟล์แล้ว';
+  if (file.uploadState === 'uploading') return 'กำลังอัปโหลด...';
+  if (file.uploadState === 'processing') return file.statusText || (isImageAttachment(file) ? 'กำลังอ่านรูปภาพ...' : 'กำลังทำ OCR...');
+  if (file.uploadState === 'ready') return file.statusText || 'พร้อมส่งให้โมเดล';
+  if (file.uploadState === 'error') return 'อัปโหลดไม่สำเร็จ';
   if (file.visionText) return 'เก็บไฟล์แล้ว · เข้าใจรูปได้';
   if (file.ocrStatus === 'readable' || file.ocrOk) return file.textReadable ? 'เก็บไฟล์แล้ว · อ่านข้อความได้' : 'เก็บไฟล์แล้ว · OCR อ่านได้';
   if (file.ocrStatus === 'unreadable' || file.ocrError) return 'เก็บไฟล์แล้ว · อ่านข้อความไม่ได้';
@@ -128,6 +134,9 @@ function attachmentStatusLabel(file = {}) {
   return 'เก็บไฟล์แล้ว';
 }
 function attachmentStatusTone(file = {}) {
+  if (file.uploadState === 'ready') return 'ok';
+  if (file.uploadState === 'error') return 'warning';
+  if (['selected', 'uploading', 'processing'].includes(file.uploadState)) return 'info';
   if (file.visionText || file.ocrStatus === 'readable' || file.ocrOk) return 'ok';
   if (file.ocrStatus === 'unreadable' || file.ocrError) return 'warning';
   return 'neutral';
@@ -154,7 +163,7 @@ function downloadBlob(filename, content, type) {
 function normalizeAttachmentList(items = []) {
   const seen = new Set();
   return items.filter(Boolean).filter((item) => {
-    const key = item.id || item.path || item.name;
+    const key = item.localId || item.id || item.path || item.name;
     if (!key || seen.has(key)) return false;
     seen.add(key);
     return true;
@@ -164,10 +173,52 @@ function collectConversationAttachments(messages = []) {
   return normalizeAttachmentList(messages.flatMap((item) => item.attachments || []));
 }
 function sanitizeAttachmentsForApi(items = []) {
-  return items.map(({ previewUrl, ...item }) => item);
+  return items.map(({ previewUrl, file, uploadState, statusText, error, ...item }) => {
+    const clean = { ...item };
+    if (clean.id || clean.path) delete clean.base64;
+    return clean;
+  });
 }
 function isImageAttachment(file = {}) {
   return String(file.type || '').startsWith('image/') || /\.(png|jpe?g|webp|gif)$/i.test(String(file.name || ''));
+}
+function createLocalAttachment(file) {
+  return {
+    localId: `local-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    name: file.name,
+    type: file.type || 'application/octet-stream',
+    size: file.size,
+    file,
+    previewUrl: isImageAttachment(file) ? URL.createObjectURL(file) : '',
+    uploadState: 'selected',
+    statusText: 'เลือกไฟล์แล้ว'
+  };
+}
+async function readSseStream(response, onEvent) {
+  if (!response.body) throw new Error('stream not available');
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  const flush = (block) => {
+    const lines = block.split(/\r?\n/).filter(Boolean);
+    const event = lines.find((line) => line.startsWith('event:'))?.slice(6).trim() || 'message';
+    const dataText = lines.filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trim()).join('\n');
+    if (!dataText) return;
+    try {
+      onEvent(event, JSON.parse(dataText));
+    } catch {
+      onEvent(event, { delta: dataText });
+    }
+  };
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const blocks = buffer.split(/\n\n/);
+    buffer = blocks.pop() || '';
+    blocks.forEach(flush);
+  }
+  if (buffer.trim()) flush(buffer);
 }
 function escapeHtml(value) {
   return String(value || '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
@@ -311,6 +362,10 @@ function MarkdownMessage({ children }) {
   </div>;
 }
 
+function StreamingMarkdown({ children }) {
+  return <MarkdownMessage>{children}</MarkdownMessage>;
+}
+
 function AttachmentChip({ file, onRemove }) {
   return <span className={cn('attachment-chip', `attachment-${attachmentStatusTone(file)}`)}>
     <Paperclip size={13} />
@@ -320,12 +375,16 @@ function AttachmentChip({ file, onRemove }) {
   </span>;
 }
 
-function ImagePreview({ file }) {
+function AttachmentPreview({ file }) {
   if (!isImageAttachment(file) || !file.previewUrl) return null;
   return <figure className="image-preview">
     <img src={file.previewUrl} alt={file.name || 'uploaded image'} />
     <figcaption>{file.name}</figcaption>
   </figure>;
+}
+
+function ImagePreview({ file }) {
+  return <AttachmentPreview file={file} />;
 }
 
 function ReasoningPanel({ summary }) {
@@ -358,6 +417,19 @@ function ThinkingIndicator({ hasAttachments = false, status }) {
   </motion.div>;
 }
 
+function AssistantStatus({ status, hasAttachments = false }) {
+  return <ThinkingIndicator hasAttachments={hasAttachments} status={status} />;
+}
+
+function ThinkingPanel({ thinking, isStreaming }) {
+  const text = String(thinking || '').trim();
+  if (!text) return null;
+  return <details className="thinking-panel" open={Boolean(isStreaming)}>
+    <summary><Lightbulb size={15} />{isStreaming ? 'กำลังคิด' : 'Thought'}</summary>
+    <pre>{text}</pre>
+  </details>;
+}
+
 function ChatMessage({ item }) {
   const isUser = item.role === 'user';
   const visibleText = item.displayContent || item.content;
@@ -380,16 +452,18 @@ function ChatMessage({ item }) {
   }
   if (item.pending) {
     return <motion.div className="message-row" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
-      <ThinkingIndicator hasAttachments={Boolean(item.hasAttachments)} status={item.status} />
+      <AssistantStatus hasAttachments={Boolean(item.hasAttachments)} status={item.status} />
     </motion.div>;
   }
   return <motion.div className={cn('message-row', isUser && 'from-user')} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
-    {!isUser ? <div className="thought-line"><Lightbulb size={18} />Thought for a moment</div> : null}
+    {!isUser && (item.isStreaming || item.status) ? <AssistantStatus hasAttachments={Boolean(item.hasAttachments)} status={item.status} /> : null}
+    {!isUser && !item.isStreaming && item.content && !item.status ? <div className="thought-line"><Lightbulb size={18} />Thought for a moment</div> : null}
     <div className={cn('bubble', isUser ? 'bubble-user' : 'bubble-agent')}>
-      {item.attachments?.length ? <div className="message-images">{item.attachments.map((file) => <ImagePreview key={`image-${file.id || file.name}`} file={file} />)}</div> : null}
-      {visibleText ? <MarkdownMessage>{visibleText}</MarkdownMessage> : null}
-      {item.attachments?.length ? <div className="bubble-attachments">{item.attachments.map((file) => <AttachmentChip key={file.id || file.name} file={file} />)}</div> : null}
-      {!isUser ? <ReasoningPanel summary={item.reasoningSummary} /> : null}
+      {item.attachments?.length ? <div className="message-images">{item.attachments.map((file) => <ImagePreview key={`image-${file.localId || file.id || file.name}`} file={file} />)}</div> : null}
+      {!isUser ? <ThinkingPanel thinking={item.thinking} isStreaming={item.isStreaming} /> : null}
+      {visibleText ? <StreamingMarkdown>{visibleText}</StreamingMarkdown> : null}
+      {item.attachments?.length ? <div className="bubble-attachments">{item.attachments.map((file) => <AttachmentChip key={file.localId || file.id || file.name} file={file} />)}</div> : null}
+      {!isUser && !item.isStreaming && !item.thinking ? <ReasoningPanel summary={item.reasoningSummary} /> : null}
       {!isUser && visibleText ? <button className="bubble-copy" onClick={copyText} title="คัดลอกคำตอบ">{copied ? <CheckCircle2 size={15} /> : <Copy size={15} />}</button> : null}
     </div>
   </motion.div>;
@@ -400,7 +474,7 @@ function MessageList({ messages, pending, pendingStatus, hasPendingAttachments, 
     ? [...messages, { role: 'assistant', pending: true, status: pendingStatus, hasAttachments: hasPendingAttachments }]
     : messages;
   return <div className="chat-stream">
-    {visibleMessages.length ? visibleMessages.map((item, index) => <ChatMessage key={`${item.role}-${index}-${item.pending ? 'pending' : 'message'}`} item={item} />) : emptyState}
+    {visibleMessages.length ? visibleMessages.map((item, index) => <ChatMessage key={item.id || `${item.role}-${index}-${item.pending ? 'pending' : 'message'}`} item={item} />) : emptyState}
   </div>;
 }
 
@@ -430,7 +504,7 @@ function Composer({ value, onChange, onSend, disabled, placeholder, helper, comp
         handleFiles(event.dataTransfer.files);
       }}
     >
-      {attachments.length ? <div className="attachment-strip">{attachments.map((item) => <AttachmentChip key={item.id || item.name} file={item} onRemove={onRemoveAttachment} />)}</div> : null}
+      {attachments.length ? <div className="attachment-strip">{attachments.map((item) => <AttachmentChip key={item.localId || item.id || item.name} file={item} onRemove={onRemoveAttachment} />)}</div> : null}
       <textarea value={value} placeholder={placeholder} onChange={(event) => onChange(event.target.value)} onKeyDown={(event) => {
         if (event.key === 'Enter' && !event.shiftKey) {
           event.preventDefault();
@@ -528,7 +602,7 @@ function TicketSummarySheet({ open, onClose, ticket, setTicket, missingFields, s
       <TextAreaField label="ข้อมูลที่ได้รับ" value={ticket['ข้อมูลที่ได้รับ']} onChange={(value) => update('ข้อมูลที่ได้รับ', value)} rows={4} />
       {attachments.length ? <div className="attachment-section">
         <div className="section-label"><strong>ไฟล์แนบ</strong><span>ไฟล์ถูกเก็บในเครื่อง และจะติดไปกับใบงานเมื่อกดบันทึก</span></div>
-        <div className="attachment-list">{attachments.map((file) => <div key={file.id || file.name} className={cn('attachment-row', `attachment-${attachmentStatusTone(file)}`)}>
+        <div className="attachment-list">{attachments.map((file) => <div key={file.localId || file.id || file.name} className={cn('attachment-row', `attachment-${attachmentStatusTone(file)}`)}>
           <Paperclip size={15} />
           <div><strong>{file.name}</strong><small>{attachmentStatusLabel(file)}{file.size ? ` · ${formatBytes(file.size)}` : ''}</small></div>
         </div>)}</div>
@@ -557,76 +631,136 @@ function TicketIntakePage({ config }) {
   const [attachments, setAttachments] = useState([]);
   const [uploadingAttachment, setUploadingAttachment] = useState(false);
   const [thinkingStatus, setThinkingStatus] = useState('กำลังคิดสักครู่');
+  const attachmentsRef = useRef([]);
+  const uploadPromisesRef = useRef(new Map());
+  const uploadResultsRef = useRef(new Map());
   const examples = ['เครื่องปริ้นพิมพ์ไม่ได้', 'Wi-Fi ใช้งานไม่ได้', 'คอมเปิดไม่ติด', 'กล้องดูไม่ได้', 'เข้าอีเมลไม่ได้'];
   const summary = useMemo(() => buildChatSummary(ticket, missingFields, saveState === 'saved', saveStatus), [ticket, missingFields, saveState, saveStatus]);
+  const conversationAttachments = useMemo(() => normalizeAttachmentList([...attachments, ...collectConversationAttachments(messages)]), [attachments, messages]);
+
+  useEffect(() => {
+    attachmentsRef.current = attachments;
+  }, [attachments]);
+
+  function patchLocalAttachment(localId, patch) {
+    const applyPatch = (item) => item.localId === localId ? { ...item, ...patch } : item;
+    setAttachments((current) => current.map(applyPatch));
+    setMessages((current) => current.map((message) => message.attachments?.length ? { ...message, attachments: message.attachments.map(applyPatch) } : message));
+  }
 
   async function uploadTicketFiles(fileList) {
     const files = Array.from(fileList || []).filter((file) => file && file.size > 0);
     if (!files.length) return;
+    const localItems = files.map(createLocalAttachment);
+    setAttachments((current) => normalizeAttachmentList([...current, ...localItems]));
     setUploadingAttachment(true);
-    try {
-      const uploaded = [];
-      for (const file of files) {
-        const base64 = await readFileAsBase64(file);
-        const previewUrl = isImageAttachment(file) ? `data:${file.type || 'image/jpeg'};base64,${base64}` : '';
-        const response = await fetch('/api/attachments', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ file: { name: file.name, type: file.type, base64 } })
-        });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error || 'upload failed');
-        uploaded.push({ ...data.attachment, previewUrl });
-      }
-      setAttachments((current) => normalizeAttachmentList([...current, ...uploaded]));
-    } catch (error) {
-      setMessages((current) => [...current, { role: 'assistant', content: `แนบไฟล์ไม่สำเร็จครับ: ${error.message}` }]);
-    } finally {
-      setUploadingAttachment(false);
-    }
+
+    const uploads = localItems.map((localItem) => {
+      const promise = (async () => {
+        try {
+          patchLocalAttachment(localItem.localId, { uploadState: 'uploading', statusText: 'กำลังอัปโหลด...' });
+          const base64 = await readFileAsBase64(localItem.file);
+          uploadResultsRef.current.set(localItem.localId, { ...localItem, base64, uploadState: 'processing', statusText: isImageAttachment(localItem) ? 'กำลังอ่านรูปภาพ...' : 'กำลังทำ OCR...' });
+          patchLocalAttachment(localItem.localId, {
+            base64,
+            uploadState: 'processing',
+            statusText: isImageAttachment(localItem) ? 'กำลังอ่านรูปภาพ...' : 'กำลังทำ OCR...'
+          });
+          const response = await fetch('/api/attachments', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ file: { name: localItem.name, type: localItem.type, base64 } })
+          });
+          const data = await response.json();
+          if (!response.ok) throw new Error(data.error || 'upload failed');
+          const readyAttachment = {
+            ...data.attachment,
+            localId: localItem.localId,
+            previewUrl: localItem.previewUrl,
+            base64: '',
+            uploadState: 'ready',
+            statusText: 'พร้อมส่งให้โมเดล'
+          };
+          uploadResultsRef.current.set(localItem.localId, readyAttachment);
+          patchLocalAttachment(localItem.localId, readyAttachment);
+        } catch (error) {
+          const failedAttachment = { ...localItem, uploadState: 'error', statusText: 'อัปโหลดไม่สำเร็จ', error: error.message };
+          uploadResultsRef.current.set(localItem.localId, failedAttachment);
+          patchLocalAttachment(localItem.localId, failedAttachment);
+        } finally {
+          uploadPromisesRef.current.delete(localItem.localId);
+        }
+      })();
+      uploadPromisesRef.current.set(localItem.localId, promise);
+      return promise;
+    });
+    Promise.allSettled(uploads).finally(() => setUploadingAttachment(uploadPromisesRef.current.size > 0));
   }
   function removeTicketAttachment(file) {
-    setAttachments((current) => current.filter((item) => (item.id || item.name) !== (file.id || file.name)));
+    if (file.previewUrl) URL.revokeObjectURL(file.previewUrl);
+    const key = file.localId || file.id || file.name;
+    if (file.localId) uploadResultsRef.current.delete(file.localId);
+    setAttachments((current) => current.filter((item) => (item.localId || item.id || item.name) !== key));
   }
 
   async function submitTicketMessage(rawText, options = {}) {
     const userText = String(rawText || '').trim();
     const activeAttachments = normalizeAttachmentList(options.attachments || attachments);
     if ((!userText && !activeAttachments.length) || isThinking) return;
-    const apiAttachments = sanitizeAttachmentsForApi(activeAttachments);
     const content = userText || 'ช่วยอ่านไฟล์แนบนี้และร่างใบงาน IT จากข้อมูลที่เกี่ยวข้อง';
     const displayContent = userText || 'ช่วยอ่านไฟล์แนบนี้และร่างใบงาน IT จากข้อมูลที่เกี่ยวข้อง';
-    const visibleMessages = [...messages, { role: 'user', content, displayContent, attachments: activeAttachments }];
-    const nextMessages = [...visibleMessages.map(({ role, content }) => ({ role, content }))];
+    const userMessage = { id: `user-${Date.now()}`, role: 'user', content, displayContent, attachments: activeAttachments };
+    const assistantId = `assistant-${Date.now()}`;
+    const assistantMessage = { id: assistantId, role: 'assistant', content: '', thinking: '', status: activeAttachments.length ? 'กำลังเตรียมไฟล์แนบ' : 'กำลังส่งคำถามให้โมเดล', hasAttachments: Boolean(activeAttachments.length), isStreaming: true };
+    const visibleMessages = [...messages, userMessage, assistantMessage];
+    const nextMessages = [...messages, userMessage].map(({ role, content }) => ({ role, content }));
     setMessages(visibleMessages);
     setInput('');
+    setAttachments([]);
     setIsThinking(true);
-    setThinkingStatus(activeAttachments.length ? 'กำลังอ่านไฟล์แนบ' : 'กำลังคิดสักครู่');
     setMode('thinking');
     setSaveStatus('');
     setSaveState('idle');
+    const updateAssistant = (patch) => {
+      setMessages((current) => current.map((item) => item.id === assistantId ? { ...item, ...(typeof patch === 'function' ? patch(item) : patch) } : item));
+    };
     try {
-      const response = await fetch('/api/chat', {
+      const activeKeys = activeAttachments.map((item) => item.localId || item.id || item.name).filter(Boolean);
+      const pendingUploads = activeKeys.map((key) => uploadPromisesRef.current.get(key)).filter(Boolean);
+      if (pendingUploads.length) {
+        updateAssistant({ status: 'กำลังเตรียมไฟล์แนบ' });
+        await Promise.allSettled(pendingUploads);
+      }
+      const latestAttachments = normalizeAttachmentList(activeKeys
+        .map((key) => uploadResultsRef.current.get(key) || attachmentsRef.current.find((item) => (item.localId || item.id || item.name) === key) || activeAttachments.find((item) => (item.localId || item.id || item.name) === key))
+        .filter(Boolean));
+      const apiAttachments = sanitizeAttachmentsForApi(latestAttachments);
+      const response = await fetch('/api/chat/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: nextMessages, attachments: apiAttachments })
+        body: JSON.stringify({ messages: nextMessages, attachments: apiAttachments, model: 'gemma4:e4b-it-qat' })
       });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'chat failed');
-      const reply = data.answer || data.agentReply || 'รับทราบครับ ขอข้อมูลเพิ่มเติมอีกนิดครับ';
-      const sourceNote = data.ragContext?.items?.length ? `\n\nข้อมูลอ้างอิงที่ใช้:\n${data.ragContext.items.map((item) => `- ${item.title || item.path}`).join('\n')}` : '';
-      setMessages([...visibleMessages, { role: 'assistant', content: `${reply}${sourceNote}`, reasoningSummary: data.reasoningSummary, ticketDraft: data.ticketDraft }]);
-      setTicket((current) => ({ ...current, ...(data.ticket || {}) }));
-      setMode(data.mode || 'done');
-      setMissingFields(data.missingFields || []);
-      setLastAgentReply(reply);
-      if (options.openDraft) {
-        setHandoffNotice('ร่างใบงานจากแชท AI แล้ว แต่ยังไม่ได้บันทึกเป็น ticket จริง จนกว่าจะกด “บันทึกใบงาน”');
-        setSheetOpen(true);
-      }
+      if (!response.ok) throw new Error(`chat stream failed (${response.status})`);
+      await readSseStream(response, (event, data) => {
+        if (event === 'status') updateAssistant({ status: data.status || '' });
+        if (event === 'thinking') updateAssistant((item) => ({ thinking: `${item.thinking || ''}${data.delta || ''}` }));
+        if (event === 'content') updateAssistant((item) => ({ content: `${item.content || ''}${data.delta || ''}` }));
+        if (event === 'error') updateAssistant({ status: data.message ? `เกิดข้อผิดพลาด: ${data.message}` : 'เกิดข้อผิดพลาด' });
+        if (event === 'done') {
+          updateAssistant({ isStreaming: false, status: '', reasoningSummary: data.reasoningSummary, ticketDraft: data.ticketDraft });
+          setTicket((current) => ({ ...current, ...(data.ticket || {}) }));
+          setMode(data.mode || 'done');
+          setMissingFields(data.missingFields || []);
+          setLastAgentReply(data.answer || data.agentReply || '');
+          if (options.openDraft) {
+            setHandoffNotice('ร่างใบงานจากแชท AI แล้ว แต่ยังไม่ได้บันทึกเป็น ticket จริง จนกว่าจะกด “บันทึกใบงาน”');
+            setSheetOpen(true);
+          }
+        }
+      });
     } catch (error) {
       setMode('error');
-      setMessages([...visibleMessages, { role: 'assistant', content: `เกิดข้อผิดพลาดครับ: ${error.message}` }]);
+      updateAssistant({ isStreaming: false, status: '', content: `เกิดข้อผิดพลาดครับ: ${error.message}` });
     } finally {
       setIsThinking(false);
     }
@@ -634,19 +768,6 @@ function TicketIntakePage({ config }) {
   async function sendMessage() {
     await submitTicketMessage(input);
   }
-  useEffect(() => {
-    if (!isThinking) return undefined;
-    const steps = attachments.length
-      ? ['กำลังอ่านไฟล์แนบ', 'กำลังวิเคราะห์ภาพ', 'กำลังค้นหาสาเหตุที่เป็นไปได้', 'กำลังเรียบเรียงคำตอบ']
-      : ['กำลังคิดสักครู่', 'กำลังตรวจสอบสัญญาณอินพุต', 'กำลังสรุปคำตอบ'];
-    let index = 0;
-    setThinkingStatus(steps[0]);
-    const timer = window.setInterval(() => {
-      index = (index + 1) % steps.length;
-      setThinkingStatus(steps[index]);
-    }, 1600);
-    return () => window.clearInterval(timer);
-  }, [isThinking, attachments.length]);
   useEffect(() => {
     const raw = sessionStorage.getItem('ticket-handoff');
     if (!raw) return;
@@ -672,7 +793,7 @@ function TicketIntakePage({ config }) {
           sourceMessage: messages.filter((item) => item.role === 'user').map((item) => item.content).join('\n'),
           agentReply: lastAgentReply,
           transcript: messages,
-          attachments: sanitizeAttachmentsForApi(attachments),
+          attachments: sanitizeAttachmentsForApi(conversationAttachments),
           ticket
         })
       });
@@ -708,6 +829,7 @@ function TicketIntakePage({ config }) {
     setSaveState('idle');
     setLastAgentReply('');
     setHandoffNotice('');
+    attachments.forEach((file) => file.previewUrl && URL.revokeObjectURL(file.previewUrl));
     setAttachments([]);
   }
 
@@ -717,11 +839,11 @@ function TicketIntakePage({ config }) {
       <IconButton label="เปิดเคสใหม่" onClick={resetChat}><RefreshCcw size={17} /></IconButton>
     </>}
     notice={handoffNotice ? <div className="handoff-banner"><strong>ร่างใบงาน</strong><span>{handoffNotice}</span><Button variant="secondary" size="sm" onClick={() => setSheetOpen(true)}>ดูร่างใบงาน</Button></div> : null}
-    composer={<Composer value={input} onChange={setInput} onSend={sendMessage} disabled={(!input.trim() && !attachments.length) || isThinking || uploadingAttachment} placeholder="Send a message" helper="แนบ screenshot, PDF, log, txt, json หรือรูปถ่ายอุปกรณ์ได้" compact onFiles={uploadTicketFiles} onRemoveAttachment={removeTicketAttachment} attachments={attachments} uploading={uploadingAttachment} busy={isThinking} />}
+    composer={<Composer value={input} onChange={setInput} onSend={sendMessage} disabled={(!input.trim() && !attachments.length) || isThinking} placeholder="Send a message" helper="แนบ screenshot, PDF, log, txt, json หรือรูปถ่ายอุปกรณ์ได้" compact onFiles={uploadTicketFiles} onRemoveAttachment={removeTicketAttachment} attachments={attachments} uploading={uploadingAttachment} busy={isThinking} />}
   >
       <MessageList
         messages={messages}
-        pending={isThinking}
+        pending={false}
         pendingStatus={thinkingStatus}
         hasPendingAttachments={Boolean(attachments.length)}
         emptyState={<EmptyState icon={ClipboardList} title="สวัสดี" description="พิมพ์อาการที่พบ หรือแนบรูป/ไฟล์ให้ AI ช่วยอ่านและร่างใบงาน IT">
@@ -735,7 +857,7 @@ function TicketIntakePage({ config }) {
         <span><strong>สรุปข้อมูล</strong><small>{ticket['ปัญหา'] || `ควรถามเพิ่ม: ${nextMissingLabel(ticket, missingFields)}`}</small></span>
         <ChevronRight size={18} />
       </motion.button> : null}
-    <TicketSummarySheet open={sheetOpen} onClose={() => setSheetOpen(false)} ticket={ticket} setTicket={setTicket} missingFields={missingFields} saveTicket={saveTicket} isSaving={isSaving} saveState={saveState} saveStatus={saveStatus} attachments={attachments} />
+    <TicketSummarySheet open={sheetOpen} onClose={() => setSheetOpen(false)} ticket={ticket} setTicket={setTicket} missingFields={missingFields} saveTicket={saveTicket} isSaving={isSaving} saveState={saveState} saveStatus={saveStatus} attachments={conversationAttachments} />
   </ChatLayout>;
 }
 

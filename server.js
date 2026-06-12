@@ -121,6 +121,26 @@ Ticket categories: CCTV/NVR, Network, Computer, Printer, Access Control, Softwar
 Priorities: Low, Medium, High, Critical.
 If the screen shows "Input Signal Not Found", explain that the monitor is not receiving a video signal and recommend checking HDMI/DisplayPort cable, input source, computer power/output, adapter/dock, and another cable/port.`;
 
+const streamingSystemPrompt = `คุณคือผู้ช่วย IT Support ภาษาไทยสำหรับองค์กร
+คุณช่วยวิเคราะห์ปัญหาคอมพิวเตอร์ จอภาพ เครือข่าย ปริ้นเตอร์ ซอฟต์แวร์ บัญชีผู้ใช้ และอุปกรณ์ไอทีจากข้อความ รูปภาพ screenshot และไฟล์แนบ
+
+กติกา:
+- ตอบเป็นภาษาไทย
+- สุภาพ กระชับ ใช้งานได้จริง
+- ถ้ามีรูปภาพ ให้พูดเฉพาะสิ่งที่เห็นจริงในภาพ
+- ถ้าเห็นข้อความ error ให้ quote ข้อความนั้น
+- ห้ามเดาข้อมูลที่ไม่เห็น
+- ห้ามแสดง chain-of-thought ภายใน
+- ถ้าโมเดลมี thinking field แยก ให้ส่งต่อเป็น thinking แยกจากคำตอบ
+- คำตอบหลักต้องเป็นคำแนะนำสำหรับผู้ใช้ ไม่ใช่บันทึกความคิดภายใน
+
+รูปแบบคำตอบหลัก:
+1. สรุปปัญหา
+2. สิ่งที่เห็นจากภาพ/ข้อความ
+3. สาเหตุที่เป็นไปได้
+4. วิธีแก้เบื้องต้น
+5. คำถามเพิ่มเติม ถ้าข้อมูลยังไม่พอ`;
+
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = llmTimeoutMs) {
   const controller = new AbortController();
@@ -1056,6 +1076,64 @@ async function callLocalGemma(messages, attachments = []) {
   };
 }
 
+function ollamaRestBaseUrl() {
+  const configured = process.env.OLLAMA_BASE_URL || llmBaseUrl || typhoonBaseUrl;
+  return String(configured).replace(/\/v1\/?$/, '').replace(/\/$/, '');
+}
+
+function sendSse(res, event, data = {}) {
+  res.write(`event: ${event}\n`);
+  res.write(`data: ${JSON.stringify(data)}\n\n`);
+}
+
+function cleanChatMessages(messages = []) {
+  return messages
+    .filter((item) => item && ['user', 'assistant'].includes(item.role) && String(item.content || '').trim())
+    .slice(-16)
+    .map((item) => ({ role: item.role, content: String(item.content).trim() }));
+}
+
+function attachmentIdToParts(attachment = {}) {
+  const id = String(attachment.id || '').trim();
+  if (/^\d{4}-\d{2}-\d{2}\/[^/]+$/.test(id)) return id.split('/');
+  const match = String(attachment.path || '').match(/data\/attachments\/(\d{4}-\d{2}-\d{2})\/([^/]+)$/);
+  return match ? [match[1], match[2]] : null;
+}
+
+async function attachmentImageBase64(attachment = {}) {
+  if (!isImageFile(attachment.name, attachment.type)) return '';
+  if (attachment.base64) return stripDataUrl(attachment.base64);
+  const parts = attachmentIdToParts(attachment);
+  if (!parts) return '';
+  const full = safeAttachmentPath(parts[0], parts[1]);
+  const data = await fs.readFile(full);
+  return data.toString('base64');
+}
+
+async function buildOllamaChatMessages(messages, attachments = []) {
+  const history = cleanChatMessages(messages);
+  const attachmentText = summarizeAttachments(attachments);
+  const ollamaMessages = [{ role: 'system', content: streamingSystemPrompt }];
+  history.forEach((item, index) => {
+    const isLatestUser = item.role === 'user' && index === history.map((entry) => entry.role).lastIndexOf('user');
+    const content = isLatestUser && attachmentText
+      ? `${item.content}\n\nข้อมูลจากไฟล์แนบที่ระบบอ่านได้:\n${attachmentText}`
+      : item.content;
+    ollamaMessages.push({ role: item.role, content });
+  });
+
+  const latestUserMessage = [...ollamaMessages].reverse().find((item) => item.role === 'user');
+  if (latestUserMessage) {
+    const images = [];
+    for (const attachment of attachments) {
+      const image = await attachmentImageBase64(attachment).catch(() => '');
+      if (image) images.push(image);
+    }
+    if (images.length) latestUserMessage.images = images;
+  }
+  return ollamaMessages;
+}
+
 
 async function readTicketRows() {
   const raw = await fs.readFile(localLogPath, 'utf8').catch(() => '');
@@ -1628,14 +1706,129 @@ app.get('/api/rag/search', requireAdmin, async (req, res) => {
   res.json(await searchKnowledge(q));
 });
 
+app.post('/api/chat/stream', chatLimiter, async (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders?.();
+
+  const messages = Array.isArray(req.body?.messages) ? req.body.messages : [];
+  const attachments = Array.isArray(req.body?.attachments) ? req.body.attachments : [];
+  const model = String(req.body?.model || llmModel || '').trim();
+  const cleanMessages = cleanChatMessages(messages);
+  const latestUser = [...cleanMessages].reverse().find((item) => item.role === 'user')?.content || '';
+  let streamedAnswer = '';
+
+  if (!cleanMessages.some((item) => item.role === 'user')) {
+    sendSse(res, 'error', { message: 'at least one user message is required' });
+    res.end();
+    return;
+  }
+
+  const finishWithFallback = async (message = '') => {
+    const fallback = fallbackTriage(latestUser, cleanMessages, attachments);
+    if (message) sendSse(res, 'error', { message });
+    sendSse(res, 'content', { delta: fallback.answer || fallback.agentReply });
+    sendSse(res, 'done', {
+      done: true,
+      mode: 'fallback-rules',
+      answer: fallback.answer,
+      agentReply: fallback.agentReply,
+      reasoningSummary: fallback.reasoningSummary,
+      ticketDraft: fallback.ticketDraft,
+      ticket: fallback.ticket,
+      missingFields: fallback.missingFields,
+      isReadyToSave: fallback.isReadyToSave
+    });
+    res.end();
+  };
+
+  try {
+    if (attachments.length) {
+      sendSse(res, 'status', { status: 'กำลังเตรียมไฟล์แนบ' });
+      if (attachments.some((item) => isImageFile(item.name, item.type))) {
+        sendSse(res, 'status', { status: 'กำลังวิเคราะห์ภาพ' });
+      }
+    }
+
+    const ollamaMessages = await buildOllamaChatMessages(cleanMessages, attachments);
+    sendSse(res, 'status', { status: 'กำลังส่งคำถามให้โมเดล' });
+
+    const body = {
+      model,
+      messages: ollamaMessages,
+      stream: true,
+      options: { temperature: 0.2 }
+    };
+    if (typeof req.body?.think === 'boolean') body.think = req.body.think;
+
+    const response = await fetch(`${ollamaRestBaseUrl()}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    if (!response.ok || !response.body) {
+      await finishWithFallback(`Ollama HTTP ${response.status}`);
+      return;
+    }
+
+    sendSse(res, 'status', { status: 'กำลังคิด' });
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split(/\r?\n/);
+      buffer = lines.pop() || '';
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        let chunk;
+        try {
+          chunk = JSON.parse(trimmed);
+        } catch {
+          continue;
+        }
+        if (chunk.message?.thinking) {
+          sendSse(res, 'thinking', { delta: String(chunk.message.thinking) });
+        }
+        if (chunk.message?.content) {
+          const delta = String(chunk.message.content);
+          streamedAnswer += delta;
+          sendSse(res, 'content', { delta });
+        }
+        if (chunk.done) {
+          sendSse(res, 'status', { status: 'กำลังเรียบเรียงคำตอบ' });
+        }
+      }
+    }
+
+    const fallback = fallbackTriage(latestUser, cleanMessages, attachments);
+    sendSse(res, 'done', {
+      done: true,
+      mode: 'ollama-stream',
+      answer: streamedAnswer || fallback.answer,
+      agentReply: streamedAnswer || fallback.agentReply,
+      reasoningSummary: fallback.reasoningSummary,
+      ticketDraft: fallback.ticketDraft,
+      ticket: fallback.ticket,
+      missingFields: fallback.missingFields,
+      isReadyToSave: fallback.isReadyToSave
+    });
+    res.end();
+  } catch (error) {
+    await finishWithFallback(error.message || 'stream failed');
+  }
+});
+
 app.post('/api/chat', chatLimiter, async (req, res) => {
   const messages = Array.isArray(req.body?.messages) ? req.body.messages : [];
   const attachments = Array.isArray(req.body?.attachments) ? req.body.attachments : [];
   const detailed = Boolean(req.body?.detailed);
-  const cleanMessages = messages
-    .filter((item) => item && ['user', 'assistant'].includes(item.role) && String(item.content || '').trim())
-    .slice(-16)
-    .map((item) => ({ role: item.role, content: String(item.content).trim() }));
+  const cleanMessages = cleanChatMessages(messages);
 
   if (!cleanMessages.some((item) => item.role === 'user')) {
     res.status(400).json({ error: 'at least one user message is required' });

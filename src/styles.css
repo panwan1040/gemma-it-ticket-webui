@@ -786,6 +786,39 @@ button, textarea, input, select {
   color: #cfcfcf;
   overflow: hidden;
 }
+.thinking-panel {
+  margin: 10px 0 18px;
+  border: 1px solid #303030;
+  border-radius: 14px;
+  background: #151515;
+  color: #bdbdbd;
+  overflow: hidden;
+}
+.thinking-panel summary {
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  cursor: pointer;
+  color: #d8d8d8;
+  font-size: 13px;
+  font-weight: 820;
+  list-style: none;
+}
+.thinking-panel summary::-webkit-details-marker {
+  display: none;
+}
+.thinking-panel pre {
+  margin: 0;
+  max-height: 260px;
+  overflow: auto;
+  border-top: 1px solid #282828;
+  padding: 12px;
+  color: #9f9f9f;
+  white-space: pre-wrap;
+  font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
 .reasoning-panel summary {
   min-height: 42px;
   display: flex;
@@ -1071,10 +1104,20 @@ button, textarea, input, select {
 }
 .attachment-strip > span,
 .attachment-ok,
-.attachment-warning {
+.attachment-warning,
+.attachment-info {
   border: 0 !important;
   background: #363636 !important;
   color: #e0e0e0 !important;
+}
+.attachment-info small {
+  color: #bdbdbd;
+}
+.attachment-warning small {
+  color: #f4c28b;
+}
+.attachment-ok small {
+  color: #9de2b7;
 }
 .attachment-strip small,
 .attachment-ok small,
