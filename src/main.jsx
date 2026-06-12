@@ -163,6 +163,12 @@ function normalizeAttachmentList(items = []) {
 function collectConversationAttachments(messages = []) {
   return normalizeAttachmentList(messages.flatMap((item) => item.attachments || []));
 }
+function sanitizeAttachmentsForApi(items = []) {
+  return items.map(({ previewUrl, ...item }) => item);
+}
+function isImageAttachment(file = {}) {
+  return String(file.type || '').startsWith('image/') || /\.(png|jpe?g|webp|gif)$/i.test(String(file.name || ''));
+}
 function escapeHtml(value) {
   return String(value || '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
 }
@@ -304,7 +310,55 @@ function MarkdownMessage({ children }) {
     }}>{normalizeMarkdown(children)}</ReactMarkdown>
   </div>;
 }
-function ChatBubble({ item }) {
+
+function AttachmentChip({ file, onRemove }) {
+  return <span className={cn('attachment-chip', `attachment-${attachmentStatusTone(file)}`)}>
+    <Paperclip size={13} />
+    <span className="attachment-name">{file.name}</span>
+    <small>{attachmentStatusLabel(file)}</small>
+    {onRemove ? <button type="button" onClick={() => onRemove(file)} aria-label={`ลบไฟล์ ${file.name}`}><X size={12} /></button> : null}
+  </span>;
+}
+
+function ImagePreview({ file }) {
+  if (!isImageAttachment(file) || !file.previewUrl) return null;
+  return <figure className="image-preview">
+    <img src={file.previewUrl} alt={file.name || 'uploaded image'} />
+    <figcaption>{file.name}</figcaption>
+  </figure>;
+}
+
+function ReasoningPanel({ summary }) {
+  const sections = [
+    ['สิ่งที่พบ', summary?.observations],
+    ['หลักฐานจากภาพ/ข้อความ', summary?.evidence],
+    ['สาเหตุที่เป็นไปได้', summary?.possibleCauses],
+    ['ขั้นตอนแนะนำถัดไป', summary?.nextSteps]
+  ].map(([title, items]) => [title, Array.isArray(items) ? items.filter(Boolean) : []]).filter(([, items]) => items.length);
+  if (!sections.length) return null;
+  return <details className="reasoning-panel">
+    <summary><Lightbulb size={15} />วิธีวิเคราะห์โดยสรุป</summary>
+    <div className="reasoning-grid">
+      {sections.map(([title, items]) => <section key={title}>
+        <h4>{title}</h4>
+        <ul>{items.map((item, index) => <li key={`${title}-${index}`}>{item}</li>)}</ul>
+      </section>)}
+    </div>
+  </details>;
+}
+
+function ThinkingIndicator({ hasAttachments = false, status }) {
+  const fallback = hasAttachments ? 'กำลังอ่านไฟล์แนบ' : 'กำลังคิดสักครู่';
+  return <motion.div className="thinking-card" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
+    <div className="thinking-bulb"><Lightbulb size={17} /></div>
+    <div>
+      <strong>กำลังคิดสักครู่</strong>
+      <span>{status || fallback}</span>
+    </div>
+  </motion.div>;
+}
+
+function ChatMessage({ item }) {
   const isUser = item.role === 'user';
   const visibleText = item.displayContent || item.content;
   const [copied, setCopied] = useState(false);
@@ -324,16 +378,37 @@ function ChatBubble({ item }) {
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1400);
   }
+  if (item.pending) {
+    return <motion.div className="message-row" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
+      <ThinkingIndicator hasAttachments={Boolean(item.hasAttachments)} status={item.status} />
+    </motion.div>;
+  }
   return <motion.div className={cn('message-row', isUser && 'from-user')} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
     {!isUser ? <div className="thought-line"><Lightbulb size={18} />Thought for a moment</div> : null}
     <div className={cn('bubble', isUser ? 'bubble-user' : 'bubble-agent')}>
+      {item.attachments?.length ? <div className="message-images">{item.attachments.map((file) => <ImagePreview key={`image-${file.id || file.name}`} file={file} />)}</div> : null}
       {visibleText ? <MarkdownMessage>{visibleText}</MarkdownMessage> : null}
-      {item.attachments?.length ? <div className="bubble-attachments">{item.attachments.map((file) => <span key={file.id || file.name}><Paperclip size={13} />{file.name}<small>{attachmentStatusLabel(file)}</small></span>)}</div> : null}
+      {item.attachments?.length ? <div className="bubble-attachments">{item.attachments.map((file) => <AttachmentChip key={file.id || file.name} file={file} />)}</div> : null}
+      {!isUser ? <ReasoningPanel summary={item.reasoningSummary} /> : null}
       {!isUser && visibleText ? <button className="bubble-copy" onClick={copyText} title="คัดลอกคำตอบ">{copied ? <CheckCircle2 size={15} /> : <Copy size={15} />}</button> : null}
     </div>
   </motion.div>;
 }
-function ChatComposer({ value, onChange, onSend, disabled, placeholder, helper, compact = false, onFiles, onRemoveAttachment, attachments = [], uploading = false, busy = false }) {
+
+function MessageList({ messages, pending, pendingStatus, hasPendingAttachments, emptyState }) {
+  const visibleMessages = pending
+    ? [...messages, { role: 'assistant', pending: true, status: pendingStatus, hasAttachments: hasPendingAttachments }]
+    : messages;
+  return <div className="chat-stream">
+    {visibleMessages.length ? visibleMessages.map((item, index) => <ChatMessage key={`${item.role}-${index}-${item.pending ? 'pending' : 'message'}`} item={item} />) : emptyState}
+  </div>;
+}
+
+function ModelSelector({ model = 'gemma4:e4b-it-qat' }) {
+  return <button className="model-pill" type="button" title="โมเดลที่ใช้งาน">{model} <ChevronRight size={14} /></button>;
+}
+
+function Composer({ value, onChange, onSend, disabled, placeholder, helper, compact = false, onFiles, onRemoveAttachment, attachments = [], uploading = false, busy = false }) {
   const [isDragging, setIsDragging] = useState(false);
   function handleFiles(fileList) {
     if (!onFiles) return;
@@ -355,12 +430,7 @@ function ChatComposer({ value, onChange, onSend, disabled, placeholder, helper, 
         handleFiles(event.dataTransfer.files);
       }}
     >
-      {attachments.length ? <div className="attachment-strip">{attachments.map((item) => <span key={item.id || item.name} className={cn('attachment-chip', `attachment-${attachmentStatusTone(item)}`)}>
-        <Paperclip size={13} />
-        <span className="attachment-name">{item.name}</span>
-        <small>{attachmentStatusLabel(item)}</small>
-        {onRemoveAttachment ? <button type="button" onClick={() => onRemoveAttachment(item)} aria-label={`ลบไฟล์ ${item.name}`}><X size={12} /></button> : null}
-      </span>)}</div> : null}
+      {attachments.length ? <div className="attachment-strip">{attachments.map((item) => <AttachmentChip key={item.id || item.name} file={item} onRemove={onRemoveAttachment} />)}</div> : null}
       <textarea value={value} placeholder={placeholder} onChange={(event) => onChange(event.target.value)} onKeyDown={(event) => {
         if (event.key === 'Enter' && !event.shiftKey) {
           event.preventDefault();
@@ -372,11 +442,20 @@ function ChatComposer({ value, onChange, onSend, disabled, placeholder, helper, 
         <div className="composer-actions">
           {onFiles ? <label className="attach-btn" title="แนบไฟล์"><Plus size={20} /><input type="file" multiple onChange={(event) => { handleFiles(event.target.files); event.target.value = ''; }} /></label> : null}
           <button className="composer-tool" type="button" title="ไฟล์ รูป และ OCR"><Globe2 size={19} /></button>
-          <button className="model-pill" type="button" title="โมเดลที่ใช้งาน">gemma4:e4b-it-qat <ChevronRight size={14} /></button>
+          <ModelSelector />
           <Button className="send-circle" onClick={onSend} disabled={disabled}>{busy || uploading ? <Square size={15} /> : <ArrowUp size={18} />}</Button>
         </div>
       </div>
     </div>
+  </div>;
+}
+
+function ChatLayout({ topActions, notice, children, composer }) {
+  return <div className="page chat-page">
+    {topActions ? <div className="chat-top-actions">{topActions}</div> : null}
+    {notice}
+    <section className="chat-canvas">{children}</section>
+    {composer}
   </div>;
 }
 
@@ -477,6 +556,7 @@ function TicketIntakePage({ config }) {
   const [sheetOpen, setSheetOpen] = useState(false);
   const [attachments, setAttachments] = useState([]);
   const [uploadingAttachment, setUploadingAttachment] = useState(false);
+  const [thinkingStatus, setThinkingStatus] = useState('กำลังคิดสักครู่');
   const examples = ['เครื่องปริ้นพิมพ์ไม่ได้', 'Wi-Fi ใช้งานไม่ได้', 'คอมเปิดไม่ติด', 'กล้องดูไม่ได้', 'เข้าอีเมลไม่ได้'];
   const summary = useMemo(() => buildChatSummary(ticket, missingFields, saveState === 'saved', saveStatus), [ticket, missingFields, saveState, saveStatus]);
 
@@ -488,6 +568,7 @@ function TicketIntakePage({ config }) {
       const uploaded = [];
       for (const file of files) {
         const base64 = await readFileAsBase64(file);
+        const previewUrl = isImageAttachment(file) ? `data:${file.type || 'image/jpeg'};base64,${base64}` : '';
         const response = await fetch('/api/attachments', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -495,7 +576,7 @@ function TicketIntakePage({ config }) {
         });
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || 'upload failed');
-        uploaded.push(data.attachment);
+        uploaded.push({ ...data.attachment, previewUrl });
       }
       setAttachments((current) => normalizeAttachmentList([...current, ...uploaded]));
     } catch (error) {
@@ -512,6 +593,7 @@ function TicketIntakePage({ config }) {
     const userText = String(rawText || '').trim();
     const activeAttachments = normalizeAttachmentList(options.attachments || attachments);
     if ((!userText && !activeAttachments.length) || isThinking) return;
+    const apiAttachments = sanitizeAttachmentsForApi(activeAttachments);
     const content = userText || 'ช่วยอ่านไฟล์แนบนี้และร่างใบงาน IT จากข้อมูลที่เกี่ยวข้อง';
     const displayContent = userText || 'ช่วยอ่านไฟล์แนบนี้และร่างใบงาน IT จากข้อมูลที่เกี่ยวข้อง';
     const visibleMessages = [...messages, { role: 'user', content, displayContent, attachments: activeAttachments }];
@@ -519,6 +601,7 @@ function TicketIntakePage({ config }) {
     setMessages(visibleMessages);
     setInput('');
     setIsThinking(true);
+    setThinkingStatus(activeAttachments.length ? 'กำลังอ่านไฟล์แนบ' : 'กำลังคิดสักครู่');
     setMode('thinking');
     setSaveStatus('');
     setSaveState('idle');
@@ -526,13 +609,13 @@ function TicketIntakePage({ config }) {
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: nextMessages, attachments: activeAttachments })
+        body: JSON.stringify({ messages: nextMessages, attachments: apiAttachments })
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'chat failed');
-      const reply = data.agentReply || 'รับทราบครับ ขอข้อมูลเพิ่มเติมอีกนิดครับ';
+      const reply = data.answer || data.agentReply || 'รับทราบครับ ขอข้อมูลเพิ่มเติมอีกนิดครับ';
       const sourceNote = data.ragContext?.items?.length ? `\n\nข้อมูลอ้างอิงที่ใช้:\n${data.ragContext.items.map((item) => `- ${item.title || item.path}`).join('\n')}` : '';
-      setMessages([...visibleMessages, { role: 'assistant', content: `${reply}${sourceNote}` }]);
+      setMessages([...visibleMessages, { role: 'assistant', content: `${reply}${sourceNote}`, reasoningSummary: data.reasoningSummary, ticketDraft: data.ticketDraft }]);
       setTicket((current) => ({ ...current, ...(data.ticket || {}) }));
       setMode(data.mode || 'done');
       setMissingFields(data.missingFields || []);
@@ -551,6 +634,19 @@ function TicketIntakePage({ config }) {
   async function sendMessage() {
     await submitTicketMessage(input);
   }
+  useEffect(() => {
+    if (!isThinking) return undefined;
+    const steps = attachments.length
+      ? ['กำลังอ่านไฟล์แนบ', 'กำลังวิเคราะห์ภาพ', 'กำลังค้นหาสาเหตุที่เป็นไปได้', 'กำลังเรียบเรียงคำตอบ']
+      : ['กำลังคิดสักครู่', 'กำลังตรวจสอบสัญญาณอินพุต', 'กำลังสรุปคำตอบ'];
+    let index = 0;
+    setThinkingStatus(steps[0]);
+    const timer = window.setInterval(() => {
+      index = (index + 1) % steps.length;
+      setThinkingStatus(steps[index]);
+    }, 1600);
+    return () => window.clearInterval(timer);
+  }, [isThinking, attachments.length]);
   useEffect(() => {
     const raw = sessionStorage.getItem('ticket-handoff');
     if (!raw) return;
@@ -576,7 +672,7 @@ function TicketIntakePage({ config }) {
           sourceMessage: messages.filter((item) => item.role === 'user').map((item) => item.content).join('\n'),
           agentReply: lastAgentReply,
           transcript: messages,
-          attachments,
+          attachments: sanitizeAttachmentsForApi(attachments),
           ticket
         })
       });
@@ -615,30 +711,32 @@ function TicketIntakePage({ config }) {
     setAttachments([]);
   }
 
-  return <div className="page chat-page">
-    <div className="chat-top-actions">
+  return <ChatLayout
+    topActions={<>
       <StatusPill tone={mode === 'error' ? 'danger' : mode === 'thinking' ? 'info' : 'ok'}>{friendlyStatus(mode)}</StatusPill>
       <IconButton label="เปิดเคสใหม่" onClick={resetChat}><RefreshCcw size={17} /></IconButton>
-    </div>
-    {handoffNotice ? <div className="handoff-banner"><strong>ร่างใบงาน</strong><span>{handoffNotice}</span><Button variant="secondary" size="sm" onClick={() => setSheetOpen(true)}>ดูร่างใบงาน</Button></div> : null}
-    <section className="chat-canvas">
-      <div className="chat-stream">
-        {messages.length ? messages.map((item, index) => <ChatBubble key={`${item.role}-${index}`} item={item} />) : <EmptyState icon={ClipboardList} title="สวัสดี" description="พิมพ์อาการที่พบ หรือแนบรูป/ไฟล์ให้ AI ช่วยอ่านและร่างใบงาน IT">
+    </>}
+    notice={handoffNotice ? <div className="handoff-banner"><strong>ร่างใบงาน</strong><span>{handoffNotice}</span><Button variant="secondary" size="sm" onClick={() => setSheetOpen(true)}>ดูร่างใบงาน</Button></div> : null}
+    composer={<Composer value={input} onChange={setInput} onSend={sendMessage} disabled={(!input.trim() && !attachments.length) || isThinking || uploadingAttachment} placeholder="Send a message" helper="แนบ screenshot, PDF, log, txt, json หรือรูปถ่ายอุปกรณ์ได้" compact onFiles={uploadTicketFiles} onRemoveAttachment={removeTicketAttachment} attachments={attachments} uploading={uploadingAttachment} busy={isThinking} />}
+  >
+      <MessageList
+        messages={messages}
+        pending={isThinking}
+        pendingStatus={thinkingStatus}
+        hasPendingAttachments={Boolean(attachments.length)}
+        emptyState={<EmptyState icon={ClipboardList} title="สวัสดี" description="พิมพ์อาการที่พบ หรือแนบรูป/ไฟล์ให้ AI ช่วยอ่านและร่างใบงาน IT">
           <div className="hint-grid">
             {['อุปกรณ์/ระบบที่มีปัญหา', 'สถานที่หรือจุดติดตั้ง', 'อาการที่พบ', 'ผลกระทบ', 'เวลาเริ่มเกิดปัญหา'].map((item) => <span key={item}><CheckCircle2 size={14} />{item}</span>)}
           </div>
           <div className="chip-row">{examples.map((item) => <button key={item} onClick={() => setInput(item)}>{item}</button>)}</div>
         </EmptyState>}
-        {isThinking ? <div className="thinking"><Loader2 className="spin" size={15} />กำลังอ่านข้อมูลและเตรียมคำถามถัดไป...</div> : null}
-      </div>
+      />
       {summary ? <motion.button className="summary-bar" onClick={() => setSheetOpen(true)} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
         <span><strong>สรุปข้อมูล</strong><small>{ticket['ปัญหา'] || `ควรถามเพิ่ม: ${nextMissingLabel(ticket, missingFields)}`}</small></span>
         <ChevronRight size={18} />
       </motion.button> : null}
-    </section>
-    <ChatComposer value={input} onChange={setInput} onSend={sendMessage} disabled={(!input.trim() && !attachments.length) || isThinking || uploadingAttachment} placeholder="Send a message" helper="แนบ screenshot, PDF, log, txt, json หรือรูปถ่ายอุปกรณ์ได้" compact onFiles={uploadTicketFiles} onRemoveAttachment={removeTicketAttachment} attachments={attachments} uploading={uploadingAttachment} busy={isThinking} />
     <TicketSummarySheet open={sheetOpen} onClose={() => setSheetOpen(false)} ticket={ticket} setTicket={setTicket} missingFields={missingFields} saveTicket={saveTicket} isSaving={isSaving} saveState={saveState} saveStatus={saveStatus} attachments={attachments} />
-  </div>;
+  </ChatLayout>;
 }
 
 function OcrStudioPage() {
@@ -1004,6 +1102,7 @@ function KnowledgeChatPage() {
       const uploaded = [];
       for (const file of files) {
         const base64 = await readFileAsBase64(file);
+        const previewUrl = isImageAttachment(file) ? `data:${file.type || 'image/jpeg'};base64,${base64}` : '';
         const response = await fetch('/api/attachments', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1011,7 +1110,7 @@ function KnowledgeChatPage() {
         });
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || 'upload failed');
-        uploaded.push(data.attachment);
+        uploaded.push({ ...data.attachment, previewUrl });
       }
       setAttachments((current) => [...current, ...uploaded]);
     } catch (error) {
@@ -1029,6 +1128,7 @@ function KnowledgeChatPage() {
     const content = userText || 'ช่วยอ่านและสรุปไฟล์แนบนี้ให้หน่อยครับ';
     const displayContent = userText || 'ช่วยอ่านและสรุปไฟล์แนบนี้ให้หน่อยครับ';
     const visibleNext = [...messages, { role: 'user', content, displayContent, attachments }];
+    const apiAttachments = sanitizeAttachmentsForApi(attachments);
     const next = [...visibleNext.map(({ role, content }) => ({ role, content }))];
     if (looksLikeTicketIntent(userText)) {
       setMessages([...visibleNext, { role: 'assistant', content: 'ได้ครับ ผมจะย้ายไปหน้าแจ้งปัญหาเพื่อร่างใบงานจากข้อมูลนี้ให้ก่อนนะครับ ยังไม่ถือว่าบันทึก ticket จริงจนกว่าจะกด “บันทึกใบงาน”' }]);
@@ -1055,11 +1155,11 @@ function KnowledgeChatPage() {
       const res = await fetch('/api/knowledge-chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: next, attachments, detailed: detailedMode })
+        body: JSON.stringify({ messages: next, attachments: apiAttachments, detailed: detailedMode })
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'request failed');
-      setMessages([...visibleNext, { role: 'assistant', content: data.answer }]);
+      setMessages([...visibleNext, { role: 'assistant', content: data.answer, reasoningSummary: data.reasoningSummary, ticketDraft: data.ticketDraft }]);
       setSources(data.ragContext?.items || []);
       setAttachments([]);
       setMode(data.mode || 'done');
@@ -1080,26 +1180,26 @@ function KnowledgeChatPage() {
     goToTicketIntake({ text: `ช่วยร่างใบงานจากบทสนทนาแชท AI นี้\n\n${transcript}`, attachments: collectConversationAttachments(messages) });
   }
 
-  return <div className="page knowledge-page">
-    <div className="chat-top-actions">
+  return <ChatLayout
+    topActions={<>
       <label className="detail-toggle"><input type="checkbox" checked={detailedMode} onChange={(event) => setDetailedMode(event.target.checked)} />คิดละเอียด</label>
       <StatusPill tone={mode === 'error' ? 'danger' : mode === 'thinking' ? 'info' : 'ok'}>{status}</StatusPill>
       <IconButton label={`แหล่งอ้างอิง ${sources.length}`} onClick={() => setSourceOpen(true)}><BookOpen size={17} /></IconButton>
-    </div>
-    <section className="knowledge-layout">
-      <div className="chat-canvas flat">
-        <div className="chat-stream">
-          {messages.length ? messages.map((item, index) => <ChatBubble key={`${item.role}-${index}`} item={item} />) : <EmptyState icon={BookOpen} title="สวัสดี" description="คุยกับ AI หรือแนบไฟล์ให้ช่วยอ่าน สรุป และส่งต่อเป็นใบงานได้">
+    </>}
+    composer={<Composer value={input} onChange={setInput} onSend={sendMessage} disabled={(!input.trim() && !attachments.length) || isThinking || uploadingAttachment} placeholder="Send a message" helper="ลากไฟล์มาวางได้ รองรับรูป/PDF/TXT/JSON/CSV/log" compact onFiles={uploadKnowledgeFiles} onRemoveAttachment={removeKnowledgeAttachment} attachments={attachments} uploading={uploadingAttachment} busy={isThinking} />}
+  >
+      <MessageList
+        messages={messages}
+        pending={isThinking}
+        pendingStatus={processStep}
+        hasPendingAttachments={Boolean(attachments.length)}
+        emptyState={<EmptyState icon={BookOpen} title="สวัสดี" description="คุยกับ AI หรือแนบไฟล์ให้ช่วยอ่าน สรุป และส่งต่อเป็นใบงานได้">
             <div className="chip-row">{prompts.map((item) => <button key={item} onClick={() => setInput(item)}>{item}</button>)}</div>
           </EmptyState>}
-          {isThinking ? <ProcessingCard detailed={detailedMode} step={processStep} /> : null}
-          {messages.length && !isThinking ? <ChatBridgeBar onOpenTicket={openTicketFromConversation} /> : null}
-        </div>
-      </div>
+      />
+      {messages.length && !isThinking ? <ChatBridgeBar onOpenTicket={openTicketFromConversation} /> : null}
       <SourcePanel open={sourceOpen} onClose={() => setSourceOpen(false)} sources={sources} />
-    </section>
-    <ChatComposer value={input} onChange={setInput} onSend={sendMessage} disabled={(!input.trim() && !attachments.length) || isThinking || uploadingAttachment} placeholder="Send a message" helper="ลากไฟล์มาวางได้ รองรับรูป/PDF/TXT/JSON/CSV/log" compact onFiles={uploadKnowledgeFiles} onRemoveAttachment={removeKnowledgeAttachment} attachments={attachments} uploading={uploadingAttachment} busy={isThinking} />
-  </div>;
+  </ChatLayout>;
 }
 function ProcessingCard({ detailed, step }) {
   const steps = detailed ? ['ค้นเอกสาร', 'ร่างคำตอบ', 'ตรวจทาน', 'เรียบเรียง'] : ['ค้นเอกสาร', 'อ่านบริบท', 'เรียบเรียง'];

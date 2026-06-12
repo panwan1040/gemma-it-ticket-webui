@@ -81,64 +81,45 @@ const uploadLimiter = makeRateLimiter({ windowMs: rateWindowMs, max: Number(proc
 const ticketLimiter = makeRateLimiter({ windowMs: rateWindowMs, max: Number(process.env.RATE_LIMIT_TICKET_MAX || 30), name: 'ticket' });
 app.use('/api', generalLimiter);
 
-const systemPrompt = `You are a senior Thai IT Support Admin for an internal helpdesk.
-You are the first-line intake agent for every IT-related issue users may report, including printers, computers, network, Wi-Fi, email, software, accounts, access control, CCTV/NVR, and vendor-supported systems.
-You help collect incident details through a multi-turn chat and draft a useful ticket for the correct support team. The UI saves the ticket only after the user clicks the save button and receives a ticket ID.
-Reply in Thai only. Use polite Thai ending "ครับ". Do not include markdown, code fences, hidden reasoning, or explanations outside JSON.
+const systemPrompt = `You are a professional Thai IT support assistant.
+You help users diagnose computer, monitor, network, printer, software, account, hardware, CCTV/NVR, access control, and vendor-supported problems from text and uploaded images.
+Answer in Thai unless the user asks otherwise. Be concise, practical, friendly, and polite.
+When an image is provided, describe only visible evidence. If the image shows an error message, quote the visible error text exactly when possible.
+Do not invent details that are not visible. Do not expose hidden chain-of-thought. Provide only a concise reasoning summary suitable for users.
 
-You may receive Relevant Knowledge from SOPs, assets, or previous incidents. Use it only when relevant to the reported category. Do not force CCTV knowledge onto printer/computer/network issues. Do not invent facts. If knowledge suggests possible causes, phrase them as possibilities.
+Important rules:
+- The UI saves a ticket only after the user clicks "บันทึกใบงาน" and receives a ticket ID. Never claim a ticket is already opened/saved before that.
+- If the issue is unclear, ask 1-3 focused follow-up questions.
+- For hardware/display issues, check cable, input source, power, device output, adapter/dock, and reboot steps.
+- For network issues, check Wi-Fi/LAN, IP, DNS, gateway, VPN, and service status.
+- For printer issues, check power, paper, queue, driver, network, and toner.
+- For account issues, check username, MFA, password expiry, lockout, and permission.
+- Keep the main answer user-friendly.
+- Keep reasoningSummary short and safe.
 
-Style:
-- Clean, concise, professional.
-- Use short bullet points when listing known details or questions.
-- Avoid long paragraphs. Keep each paragraph under 2 short sentences.
-- Accept and triage the reported issue category directly; never say you only support CCTV/NVR.
-- Ask smart follow-up questions, not generic checklists.
-- Ask one question per reply by default. Ask at most 2 only when the questions are tightly related.
-- Never ask a long checklist.
-- Prefer natural concise questions such as asking for callback phone, exact building/area, department, affected device, and whether there is anything else to add.
-- Prioritize questions that change urgency, routing, asset identification, or first action.
-- If enough information exists, stop asking, say IT has enough information to draft the ticket, mention that IT will contact the requester back after the ticket is saved, summarize known details as bullets, and ask if there is anything else to add.
-- Never say the ticket has already been created, opened, saved, or recorded. The app only saves after the user clicks "บันทึกใบงาน" and receives a ticket ID. Before that, say only that the draft is ready to save.
-- If the user only attaches a file/image/PDF or OCR text without clearly describing the issue, acknowledge the attachment briefly and ask exactly one question: what issue should IT check from this file? Do not say you are unsure whether it is related to IT. Do not list example questions.
-- If the user asks what an attached file is, asks to summarize/check/read the file, or says "นี่คืออะไร", first summarize the readable attachment content in 2-4 short bullet points, then ask one short question: do they want IT to open a work order from this file? Keep isReadyToSave false unless they clearly ask to open/save the ticket.
-- If an attachment is not an IT issue, do not reject it abruptly. Explain briefly what the file appears to be, then ask what IT action they want, such as storing it as evidence, checking access, printing, email delivery, or opening a request.
-
-Return exactly one JSON object:
+Return valid JSON only:
 {
-  "agentReply": "Thai chat reply",
-  "isReadyToSave": true,
-  "missingFields": ["short missing item"],
-  "ticket": {
-    "ประเภท": "CCTV/NVR | Network | Computer | Printer | Access Control | Software | Other",
-    "ปัญหา": "specific problem summary with affected asset/location if known",
-    "ผลกระทบ": "specific business/security/user impact",
-    "ข้อมูลที่ได้รับ": "detailed Thai summary: asset/location, symptom, affected users/devices, start time, evidence/error, useful knowledge hints, workaround/status",
-    "ระดับความเร่งด่วน": "Low | Medium | High | Critical",
-    "ทีมที่เกี่ยวข้อง": "IT Support | Network | Security | Vendor | Facilities | Other"
-  }
+  "answer": "Markdown answer in Thai",
+  "reasoningSummary": {
+    "observations": [],
+    "evidence": [],
+    "possibleCauses": [],
+    "nextSteps": []
+  },
+  "ticketDraft": {
+    "category": "",
+    "priority": "",
+    "title": "",
+    "description": "",
+    "suggestedActions": []
+  },
+  "isReadyToSave": false,
+  "missingFields": []
 }
 
-Category triage priorities:
-- Printer: ask printer name/location, symptom/error, affected users/devices, and whether other printers work. Team is usually IT Support or Vendor if hardware/service required.
-- Computer: ask device/user, symptom, OS/app involved, start time, and impact. Team is usually IT Support.
-- Network/Wi-Fi/VPN: ask location/network name, affected scope, start time, and whether internet/internal systems are affected. Team is usually Network.
-- Software/Email/Account: ask app/system, account/user, error message, affected scope, and urgency. Team is usually IT Support or application owner.
-- Access Control: ask door/device/location, symptom, affected users, and security impact. Team is usually IT Support/Security/Vendor.
-- CCTV/NVR: ask camera name/ID or exact location, affected viewers/devices, symptom, start time, and screenshot/error if useful. For CCTV/NVR, default team is IT Support for first response; mention security impact in ผลกระทบ.
-
-Readiness rules:
-- Ready when support can take first action: category, affected asset/location, symptom, impact, and rough scope/urgency.
-- Do not block saving because screenshot or exact start time is missing; list it as optional missing info.
-- If missing only contact, exact sub-location, department, or optional evidence, ask briefly instead of producing a long explanation.
-- If an attachment is present, treat it as supporting evidence and include it in ข้อมูลที่ได้รับ. If OCR text is unclear or unrelated, say only that the file was received and ask for the issue in one short question.
-- If the user does not know technical details, do not press them for model names. Ask for observable symptoms and location instead.
-
-Urgency rules:
-- Critical: safety risk, site-wide outage, business stopped, NVR/all critical cameras down.
-- High: multiple users/areas affected, critical-area camera down with no workaround.
-- Medium: one camera/area/device affected, monitoring degraded but work continues.
-- Low: minor issue, request, intermittent issue with workaround.`;
+Ticket categories: CCTV/NVR, Network, Computer, Printer, Access Control, Software, Account, Hardware, Other.
+Priorities: Low, Medium, High, Critical.
+If the screen shows "Input Signal Not Found", explain that the monitor is not receiving a video signal and recommend checking HDMI/DisplayPort cable, input source, computer power/output, adapter/dock, and another cable/port.`;
 
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = llmTimeoutMs) {
@@ -908,14 +889,75 @@ function buildReadyReply(ticket) {
   return `ข้อมูลเพียงพอสำหรับร่างใบงานแล้วครับ ยังไม่ถือว่าบันทึกจริงจนกว่าจะกด “บันทึกใบงาน” และได้รับเลข ticket\n\nสรุปข้อมูล:\n- ประเภท: ${ticket['ประเภท']}\n- ปัญหา: ${ticket['ปัญหา']}\n- ผลกระทบ: ${ticket['ผลกระทบ']}\n- ระดับความเร่งด่วน: ${ticket['ระดับความเร่งด่วน']}\n- ทีมที่เกี่ยวข้อง: ${ticket['ทีมที่เกี่ยวข้อง']}\n\nมีข้อมูลเพิ่มเติมอีกไหมครับ`;
 }
 
+function parseJsonFromModel(content) {
+  const text = String(content || '').trim();
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  if (start === -1 || end === -1 || end <= start) {
+    throw new Error(`LLM returned non-JSON content: ${text.slice(0, 160)}`);
+  }
+  return JSON.parse(text.slice(start, end + 1));
+}
+
+function normalizeStringArray(value, fallback = []) {
+  const list = Array.isArray(value) ? value : fallback;
+  return list.map((item) => String(item || '').trim()).filter(Boolean).slice(0, 6);
+}
+
+function normalizeReasoningSummary(value = {}, fallback = {}) {
+  return {
+    observations: normalizeStringArray(value.observations, fallback.observations || []),
+    evidence: normalizeStringArray(value.evidence, fallback.evidence || []),
+    possibleCauses: normalizeStringArray(value.possibleCauses, fallback.possibleCauses || []),
+    nextSteps: normalizeStringArray(value.nextSteps, fallback.nextSteps || [])
+  };
+}
+
+function fallbackReasoningSummary(ticket = {}, attachments = []) {
+  const attachmentNames = attachments.map((item) => item.name).filter(Boolean);
+  const visibleEvidence = attachments.flatMap((item) => [
+    item.visionText ? `ภาพ/ไฟล์ ${item.name || ''}: ${String(item.visionText).slice(0, 180)}` : '',
+    item.ocrText ? `ข้อความจากไฟล์ ${item.name || ''}: ${String(item.ocrText).slice(0, 180)}` : ''
+  ]).filter(Boolean);
+  return {
+    observations: [ticket['ปัญหา'] || 'ได้รับข้อมูลจากผู้ใช้เพื่อประเมินปัญหา IT'].filter(Boolean),
+    evidence: visibleEvidence.length ? visibleEvidence.slice(0, 3) : (attachmentNames.length ? [`มีไฟล์แนบ: ${attachmentNames.join(', ')}`] : ['อ้างอิงจากข้อความที่ผู้ใช้แจ้ง']),
+    possibleCauses: [ticket['ประเภท'] === 'Computer' ? 'อาจเกี่ยวข้องกับอุปกรณ์ สายสัญญาณ ซอฟต์แวร์ หรือการตั้งค่า' : 'ต้องตรวจสอบข้อมูลเพิ่มเพื่อระบุสาเหตุที่แน่ชัด'],
+    nextSteps: ['ตรวจสอบข้อมูลพื้นฐานและผลกระทบ', 'ขอรายละเอียดที่จำเป็นก่อนบันทึกใบงาน']
+  };
+}
+
+function normalizeTicketDraft(value = {}, ticket = {}) {
+  return {
+    category: String(value.category || ticket['ประเภท'] || 'Other'),
+    priority: String(value.priority || ticket['ระดับความเร่งด่วน'] || 'Medium'),
+    title: String(value.title || ticket['ปัญหา'] || '').slice(0, 180),
+    description: String(value.description || ticket['ข้อมูลที่ได้รับ'] || ticket['ผลกระทบ'] || '').slice(0, 3000),
+    suggestedActions: normalizeStringArray(value.suggestedActions, [])
+  };
+}
+
+function ticketDraftToLegacy(draft = {}, fallback = {}) {
+  const actions = normalizeStringArray(draft.suggestedActions, []);
+  return normalizeTicket({
+    'ประเภท': draft.category || fallback['ประเภท'],
+    'ปัญหา': draft.title || fallback['ปัญหา'],
+    'ผลกระทบ': fallback['ผลกระทบ'] || 'ต้องประเมินผลกระทบจากข้อมูลที่ผู้ใช้แจ้ง',
+    'ข้อมูลที่ได้รับ': [draft.description, actions.length ? `ขั้นตอนแนะนำ:\n${actions.map((item) => `- ${item}`).join('\n')}` : ''].filter(Boolean).join('\n\n') || fallback['ข้อมูลที่ได้รับ'],
+    'ระดับความเร่งด่วน': draft.priority || fallback['ระดับความเร่งด่วน'],
+    'ทีมที่เกี่ยวข้อง': fallback['ทีมที่เกี่ยวข้อง'] || (draft.category === 'Network' ? 'Network' : 'IT Support')
+  }, fallback);
+}
+
 function fallbackTriage(message, history = [], attachments = []) {
   const attachmentSummary = summarizeAttachments(attachments);
   const historyText = history.map((item) => item.content).filter(Boolean).join('\n').trim();
   const allText = [historyText || message, attachmentSummary].filter(Boolean).join('\n').trim();
   const isCctv = /กล้อง|cctv|nvr|dvr|โกดัง|warehouse|no signal|offline/i.test(allText);
   const isPrinter = /ปริ้น|ปริน|printer|พิมพ์|เครื่องพิมพ์/i.test(allText);
+  const isDisplay = /input signal not found|no signal|จอ|monitor|display|hdmi|displayport|dp\b|vga|ภาพไม่ขึ้น|ไม่มีสัญญาณ/i.test(allText) && !isCctv;
   const hasAttachment = Boolean(attachmentSummary);
-  const category = isCctv ? 'CCTV/NVR' : isPrinter ? 'Printer' : 'Other';
+  const category = isCctv ? 'CCTV/NVR' : isPrinter ? 'Printer' : isDisplay ? 'Computer' : 'Other';
   const attachmentNames = attachments.map((item) => item.name).filter(Boolean).join(', ');
   const problemSummary = hasAttachment
     ? `${category === 'Other' ? 'ตรวจสอบไฟล์แนบ' : `ตรวจสอบปัญหา ${category}`} จากไฟล์ ${attachmentNames || 'ที่แนบ'}`
@@ -923,23 +965,47 @@ function fallbackTriage(message, history = [], attachments = []) {
   const attachmentReply = hasAttachment
     ? `รับไฟล์แนบแล้วครับ ผมอ่านข้อความ/รายละเอียดที่อ่านได้จากไฟล์ไว้ประกอบร่างใบงานแล้ว\n\n${attachmentSummary.slice(0, 900)}\n\nต้องการให้ทีม IT ตรวจเรื่องอะไรจากไฟล์นี้ครับ`
     : '';
-  const reply = attachmentReply || (isPrinter
+  const displayReply = `จากข้อมูลที่แจ้งว่า “Input Signal Not Found” หมายความว่าจอไม่พบสัญญาณภาพจากคอมพิวเตอร์ครับ\n\nแนะนำให้ลองตามลำดับนี้:\n\n1. ตรวจสาย HDMI/DisplayPort ว่าเสียบแน่นทั้งฝั่งจอและคอม\n2. กดเลือก input/source บนจอให้ตรงกับพอร์ตที่ใช้\n3. ตรวจว่าเครื่องคอมเปิดอยู่และมีไฟ/พัดลมทำงาน\n4. ถอดเสียบสายใหม่ แล้วลองสายหรือพอร์ตอื่น\n5. ถ้าต่อผ่าน dock/adapter ให้ลองต่อจอตรงกับเครื่องก่อน\n\nถ้ายังไม่ได้ ขอข้อมูลเพิ่ม 2 อย่างครับ: ใช้สายอะไรต่อจอ และต่อผ่าน dock/adapter หรือไม่`;
+  const reply = attachmentReply || (isDisplay
+    ? displayReply
+    : isPrinter
     ? 'รับทราบครับ ขอข้อมูลเพิ่มนิดนึงครับ\n\n- เครื่องปริ้นอยู่บริเวณไหนของอาคาร/ชั้นไหนครับ\n- แผนกอะไรครับ\n- ขอเบอร์โทรติดต่อกลับได้ไหมครับ'
     : isCctv
       ? 'รับทราบครับ ขอข้อมูลเพิ่มนิดนึงครับ\n\n- กล้องอยู่บริเวณไหนครับ\n- ดูไม่ได้ทุกเครื่องหรือเฉพาะเครื่องคุณครับ\n- ขอเบอร์โทรติดต่อกลับได้ไหมครับ'
       : 'รับทราบครับ ขอข้อมูลเพิ่มนิดนึงครับ\n\n- อาคาร/บริเวณไหนครับ\n- แผนกอะไรครับ\n- ขอเบอร์โทรติดต่อกลับได้ไหมครับ');
+  const ticket = {
+    'ประเภท': category,
+    'ปัญหา': problemSummary,
+    'ผลกระทบ': isCctv ? 'การตรวจสอบพื้นที่ผ่านระบบ CCTV อาจได้รับผลกระทบ' : isPrinter ? 'ผู้ใช้อาจไม่สามารถพิมพ์เอกสารได้ตามปกติ' : isDisplay ? 'ผู้ใช้อาจไม่สามารถใช้งานเครื่องคอมพิวเตอร์หรือจอแสดงผลได้ตามปกติ' : 'ต้องรอข้อมูลเพิ่มเติมเพื่อประเมินผลกระทบ',
+    'ข้อมูลที่ได้รับ': allText || '-',
+    'ระดับความเร่งด่วน': 'Medium',
+    'ทีมที่เกี่ยวข้อง': 'IT Support'
+  };
+  const ticketDraft = normalizeTicketDraft({
+    category,
+    priority: 'Medium',
+    title: problemSummary,
+    description: ticket['ข้อมูลที่ได้รับ'],
+    suggestedActions: isDisplay
+      ? ['ตรวจสาย HDMI/DisplayPort', 'เลือก input/source ให้ถูกต้อง', 'ทดสอบสาย พอร์ต หรือ dock/adapter อื่น']
+      : hasAttachment ? ['ระบุประเด็นที่ต้องการให้ IT ตรวจจากไฟล์แนบ'] : []
+  }, ticket);
+  const reasoningSummary = isDisplay ? {
+    observations: ['จอแสดงข้อความ Input Signal Not Found หรือไม่มีสัญญาณภาพ'],
+    evidence: hasAttachment ? ['อ้างอิงจากข้อความ/รูปที่แนบและข้อมูลที่ผู้ใช้แจ้ง'] : ['อ้างอิงจากข้อความที่ผู้ใช้แจ้ง'],
+    possibleCauses: ['สายสัญญาณหลวมหรือเสีย', 'เลือก input/source ผิด', 'คอมพิวเตอร์ไม่ส่งสัญญาณภาพ', 'adapter หรือ dock มีปัญหา'],
+    nextSteps: ['ตรวจสายและ input/source ก่อน', 'ลองถอดเสียบสายใหม่', 'ทดสอบสาย พอร์ต หรือ dock/adapter อื่น']
+  } : fallbackReasoningSummary(ticket, attachments);
   return {
     agentReply: reply,
+    answer: reply,
+    reasoningSummary,
+    ticketDraft,
     isReadyToSave: false,
-    missingFields: hasAttachment ? ['ประเด็นที่ต้องการให้ IT ตรวจจากไฟล์', 'สถานที่/ผู้เกี่ยวข้อง', 'ช่องทางติดต่อกลับ'] : ['ชื่อกล้อง/บริเวณ', 'ขอบเขตผู้ได้รับผลกระทบ', 'อาการที่พบ'],
-    ticket: {
-      'ประเภท': category,
-      'ปัญหา': problemSummary,
-      'ผลกระทบ': isCctv ? 'การตรวจสอบพื้นที่ผ่านระบบ CCTV อาจได้รับผลกระทบ' : isPrinter ? 'ผู้ใช้อาจไม่สามารถพิมพ์เอกสารได้ตามปกติ' : 'ต้องรอข้อมูลเพิ่มเติมเพื่อประเมินผลกระทบ',
-      'ข้อมูลที่ได้รับ': allText || '-',
-      'ระดับความเร่งด่วน': 'Medium',
-      'ทีมที่เกี่ยวข้อง': 'IT Support'
-    }
+    missingFields: isDisplay
+      ? ['ชนิดสายที่ใช้ เช่น HDMI/DisplayPort', 'ต่อผ่าน dock หรือ adapter หรือไม่', 'สถานที่และช่องทางติดต่อกลับ']
+      : hasAttachment ? ['ประเด็นที่ต้องการให้ IT ตรวจจากไฟล์', 'สถานที่/ผู้เกี่ยวข้อง', 'ช่องทางติดต่อกลับ'] : ['ชื่อกล้อง/บริเวณ', 'ขอบเขตผู้ได้รับผลกระทบ', 'อาการที่พบ'],
+    ticket
   };
 }
 
@@ -951,7 +1017,7 @@ async function callLocalGemma(messages, attachments = []) {
   const rag = await searchKnowledge([conversationText || latestUser, attachmentText].filter(Boolean).join('\n'));
   const fallback = fallbackTriage(latestUser, history, attachments);
 
-  const userInstruction = `${rag.context ? `Relevant Knowledge:\n${rag.context}\n\n` : ''}${attachmentText ? `Attachments:\n${attachmentText}\n\n` : ''}Conversation so far:\n${conversationText}\n\nอัปเดต ticket จากบริบททั้งหมดด้านบน ตอบกลับเป็น JSON object เท่านั้น`;
+  const userInstruction = `${rag.context ? `Relevant Knowledge:\n${rag.context}\n\n` : ''}${attachmentText ? `Attachments:\n${attachmentText}\n\n` : ''}Conversation so far:\n${conversationText}\n\nวิเคราะห์ปัญหา IT จากบริบททั้งหมดด้านบน แล้วตอบกลับเป็น JSON object ตาม schema เท่านั้น ห้ามใส่ markdown code fence รอบ JSON`;
 
   const response = await fetchWithTimeout(`${llmBaseUrl}/chat/completions`, {
     method: 'POST',
@@ -959,7 +1025,7 @@ async function callLocalGemma(messages, attachments = []) {
     body: JSON.stringify({
       model: llmModel,
       temperature: 0,
-      max_tokens: 720,
+      max_tokens: 1100,
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userInstruction }
@@ -971,16 +1037,18 @@ async function callLocalGemma(messages, attachments = []) {
 
   const data = await response.json();
   const content = data.choices?.[0]?.message?.content || '';
-  const start = content.indexOf('{');
-  const end = content.lastIndexOf('}');
-  if (start === -1 || end === -1 || end <= start) throw new Error(`LLM returned non-JSON content: ${content.slice(0, 160)}`);
-
-  const parsed = JSON.parse(content.slice(start, end + 1));
-  const ticket = normalizeTicket(parsed.ticket, fallback.ticket);
+  const parsed = parseJsonFromModel(content);
+  const draft = normalizeTicketDraft(parsed.ticketDraft, fallback.ticket);
+  const ticket = parsed.ticket ? normalizeTicket(parsed.ticket, fallback.ticket) : ticketDraftToLegacy(draft, fallback.ticket);
   const readyByUserConfirmation = hasReadyIntent(latestUser) && isActionableTicket(ticket);
   const missingFields = Array.isArray(parsed.missingFields) ? parsed.missingFields : fallback.missingFields;
+  const answer = readyByUserConfirmation ? buildReadyReply(ticket) : (parsed.answer || parsed.agentReply || fallback.agentReply);
+  const reasoningSummary = normalizeReasoningSummary(parsed.reasoningSummary, fallbackReasoningSummary(ticket, attachments));
   return {
-    agentReply: readyByUserConfirmation ? buildReadyReply(ticket) : (parsed.agentReply || fallback.agentReply),
+    agentReply: answer,
+    answer,
+    reasoningSummary,
+    ticketDraft: draft,
     isReadyToSave: readyByUserConfirmation || Boolean(parsed.isReadyToSave),
     missingFields: readyByUserConfirmation ? [] : missingFields,
     ticket,
@@ -1597,7 +1665,25 @@ If the user asks how to open a ticket, explain that they should go to "แจ้
 Do not claim that you opened, saved, moved, or submitted a ticket unless the UI explicitly confirms a ticket ID.
 If OCR/file text is unavailable but the user asks about the file, say clearly that the file was received but readable text is not available, then suggest uploading a clearer file or enabling OCR.
 Do not invent local policy, asset names, contacts, or exact internal procedures that are not in the knowledge or attached text.
-When useful, structure the answer with short headings, bullet points, and GitHub-Flavored Markdown tables. Do not use raw HTML tables.`;
+When useful, structure the answer with short headings, bullet points, and GitHub-Flavored Markdown tables. Do not use raw HTML tables.
+Do not reveal private chain-of-thought. Provide only a concise reasoning summary suitable for users.
+Return valid JSON only:
+{
+  "answer": "Markdown answer in Thai",
+  "reasoningSummary": {
+    "observations": [],
+    "evidence": [],
+    "possibleCauses": [],
+    "nextSteps": []
+  },
+  "ticketDraft": {
+    "category": "",
+    "priority": "",
+    "title": "",
+    "description": "",
+    "suggestedActions": []
+  }
+}`;
   const context = `Attached File Text:\n${attachmentText || '(no attached readable text)'}\n\nRelevant Knowledge:\n${ragContext || '(no direct matches)'}\n\nConversation:\n${conversation}`;
   const call = async (messages, maxTokens = 1100) => {
     const response = await fetchWithTimeout(`${llmBaseUrl}/chat/completions`, {
@@ -1607,19 +1693,29 @@ When useful, structure the answer with short headings, bullet points, and GitHub
     });
     if (!response.ok) throw new Error(`LLM HTTP ${response.status}`);
     const data = await response.json();
-    const answer = data.choices?.[0]?.message?.content?.trim();
-    if (!answer) throw new Error('empty model response');
-    return answer;
+    const content = data.choices?.[0]?.message?.content?.trim();
+    if (!content) throw new Error('empty model response');
+    const parsed = parseJsonFromModel(content);
+    return {
+      answer: String(parsed.answer || '').trim(),
+      reasoningSummary: normalizeReasoningSummary(parsed.reasoningSummary, {
+        observations: ['พิจารณาคำถามล่าสุดและบริบทที่มี'],
+        evidence: attachmentText ? ['มีข้อความหรือข้อมูลจากไฟล์แนบ'] : (ragContext ? ['มีข้อมูลจากคลังความรู้ที่เกี่ยวข้อง'] : ['อ้างอิงจากคำถามของผู้ใช้']),
+        possibleCauses: [],
+        nextSteps: ['ตอบตามข้อมูลที่มีและระบุข้อจำกัดเมื่อข้อมูลไม่พอ']
+      }),
+      ticketDraft: normalizeTicketDraft(parsed.ticketDraft, {})
+    };
   };
   if (!detailed) {
     return await call([
       { role: 'system', content: baseSystem },
-      { role: 'user', content: `${context}\n\nตอบคำถามล่าสุด ถ้ามีไฟล์แนบหรือคลังความรู้ให้ใช้อ้างอิงก่อน ถ้าไม่เกี่ยวข้องให้ตอบแบบผู้ช่วย AI ทั่วไป` }
+      { role: 'user', content: `${context}\n\nตอบคำถามล่าสุด ถ้ามีไฟล์แนบหรือคลังความรู้ให้ใช้อ้างอิงก่อน ถ้าไม่เกี่ยวข้องให้ตอบแบบผู้ช่วย AI ทั่วไป ห้ามใส่ markdown code fence รอบ JSON` }
     ], 900);
   }
   return await call([
     { role: 'system', content: `${baseSystem}\nAnswer in a more complete but still concise way. Use headings, bullets, and tables only when they improve readability. Prioritize correctness and do not mention hidden draft/review steps.` },
-    { role: 'user', content: `${context}\n\nตอบคำถามล่าสุดแบบละเอียดพอดี อ่านง่าย มีเหตุผล และบอกให้ชัดเมื่อไม่ได้อ้างอิงเอกสาร local` }
+    { role: 'user', content: `${context}\n\nตอบคำถามล่าสุดแบบละเอียดพอดี อ่านง่าย มีเหตุผล และบอกให้ชัดเมื่อไม่ได้อ้างอิงเอกสาร local ห้ามใส่ markdown code fence รอบ JSON` }
   ], 1500);
 }
 
@@ -1643,17 +1739,25 @@ app.post('/api/knowledge-chat', chatLimiter, async (req, res) => {
   const rag = await searchKnowledge(searchText, 6);
   try {
     const conversation = cleanMessages.map((item) => `${item.role === 'user' ? 'User' : 'Assistant'}: ${item.content}`).join('\n');
-    const answer = await completeKnowledgeAnswer({ conversation, ragContext: rag.context, attachmentText, detailed });
-    res.json({ mode: detailed ? 'detailed-gemma' : 'local-gemma', answer, ragContext: { count: rag.count, items: rag.items } });
+    const result = await completeKnowledgeAnswer({ conversation, ragContext: rag.context, attachmentText, detailed });
+    res.json({ mode: detailed ? 'detailed-gemma' : 'local-gemma', ...result, ragContext: { count: rag.count, items: rag.items } });
   } catch {
     const attachmentFallback = attachmentText
       ? `ผมรับไฟล์แนบและอ่านข้อความที่อ่านได้แล้วครับ แต่โมเดล local ยังไม่พร้อมตอบแบบสมบูรณ์ตอนนี้\n\n## ข้อมูลจากไฟล์แนบ\n\n${attachmentText.slice(0, 2400)}\n\nลองถามต่อจากข้อความนี้ได้เลย หรือเปิด local model server แล้วส่งคำถามใหม่ครับ`
       : '';
+    const answer = attachmentFallback || (rag.items.length
+      ? `ผมเจอเอกสารที่น่าจะเกี่ยวข้องครับ แต่ตอนนี้โมเดล local ยังไม่พร้อมตอบแบบละเอียด:\n\n${rag.items.map((item, index) => `${index + 1}. ${item.title}\n${item.snippet}`).join('\n\n')}`
+      : 'ตอนนี้โมเดล local ยังไม่พร้อมตอบครับ ลองถามใหม่อีกครั้ง หรือเช็กว่า local model server เปิดอยู่ครับ');
     res.json({
       mode: 'fallback-rag',
-      answer: attachmentFallback || (rag.items.length
-        ? `ผมเจอเอกสารที่น่าจะเกี่ยวข้องครับ แต่ตอนนี้โมเดล local ยังไม่พร้อมตอบแบบละเอียด:\n\n${rag.items.map((item, index) => `${index + 1}. ${item.title}\n${item.snippet}`).join('\n\n')}`
-        : 'ตอนนี้โมเดล local ยังไม่พร้อมตอบครับ ลองถามใหม่อีกครั้ง หรือเช็กว่า local model server เปิดอยู่ครับ'),
+      answer,
+      reasoningSummary: normalizeReasoningSummary({}, {
+        observations: [attachmentText ? 'ได้รับไฟล์แนบหรือข้อความจากไฟล์' : 'ไม่พบคำตอบจากโมเดล local'],
+        evidence: attachmentText ? ['มีข้อมูลจากไฟล์แนบที่อ่านได้'] : (rag.items.length ? ['มีเอกสารในคลังที่อาจเกี่ยวข้อง'] : ['ยังไม่มีบริบทเพียงพอ']),
+        possibleCauses: ['โมเดล local อาจยังไม่พร้อมใช้งานหรือหมดเวลา'],
+        nextSteps: ['ตรวจสอบว่า Ollama/model server เปิดอยู่', 'ส่งคำถามใหม่อีกครั้ง']
+      }),
+      ticketDraft: normalizeTicketDraft({}, {}),
       ragContext: { count: rag.count, items: rag.items }
     });
   }

@@ -742,6 +742,100 @@ button, textarea, input, select {
   background: #292929;
   color: #d2d2d2;
 }
+.message-images {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.image-preview {
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid #3a3a3a;
+  border-radius: 14px;
+  background: #181818;
+}
+.image-preview img {
+  display: block;
+  width: 100%;
+  max-height: 360px;
+  object-fit: contain;
+  background: #0b0b0b;
+}
+.image-preview figcaption {
+  border-top: 1px solid #303030;
+  color: #9a9a9a;
+  padding: 8px 10px;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bubble-user:has(.image-preview) {
+  width: min(420px, 80%);
+  border-radius: 18px;
+  padding: 10px;
+}
+.bubble-user:has(.image-preview) .markdown-message {
+  padding: 2px 7px 4px;
+}
+.reasoning-panel {
+  margin-top: 18px;
+  border: 1px solid #2f2f2f;
+  border-radius: 14px;
+  background: #171717;
+  color: #cfcfcf;
+  overflow: hidden;
+}
+.reasoning-panel summary {
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  color: #dddddd;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 820;
+  list-style: none;
+}
+.reasoning-panel summary::-webkit-details-marker {
+  display: none;
+}
+.reasoning-panel summary::after {
+  content: "";
+  width: 8px;
+  height: 8px;
+  margin-left: auto;
+  border-right: 1.5px solid #8d8d8d;
+  border-bottom: 1.5px solid #8d8d8d;
+  transform: rotate(45deg);
+  transition: transform 160ms ease;
+}
+.reasoning-panel[open] summary::after {
+  transform: rotate(225deg);
+}
+.reasoning-grid {
+  display: grid;
+  gap: 13px;
+  border-top: 1px solid #2b2b2b;
+  padding: 12px;
+}
+.reasoning-grid h4 {
+  margin: 0 0 6px;
+  color: #f0f0f0;
+  font-size: 12px;
+  font-weight: 860;
+}
+.reasoning-grid ul {
+  margin: 0;
+  padding-left: 18px;
+  color: #a8a8a8;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.reasoning-grid li {
+  margin: 2px 0;
+}
 .empty-state {
   border: 0;
   border-radius: 0;
@@ -791,6 +885,36 @@ button, textarea, input, select {
   padding: 0;
   font-size: 18px;
   box-shadow: none;
+}
+.thinking-card {
+  display: inline-grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  color: #a8a8a8;
+}
+.thinking-bulb {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  background: #222222;
+  color: #d7d7d7;
+}
+.thinking-card strong,
+.thinking-card span {
+  display: block;
+}
+.thinking-card strong {
+  color: #dcdcdc;
+  font-size: 16px;
+  font-weight: 800;
+}
+.thinking-card span {
+  margin-top: 3px;
+  color: #858585;
+  font-size: 13px;
 }
 .processing-card {
   width: min(560px, 100%);
