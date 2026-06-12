@@ -36,6 +36,8 @@ const appConfig = {
 };
 const typhoonBaseUrl = process.env.TYPHOON_OCR_BASE_URL || 'http://127.0.0.1:11434';
 const typhoonModel = process.env.TYPHOON_OCR_MODEL || 'scb10x/typhoon-ocr1.5-3b';
+const ollamaVisionBaseUrl = process.env.OLLAMA_VISION_BASE_URL || process.env.OLLAMA_BASE_URL || typhoonBaseUrl;
+const ollamaVisionModel = process.env.OLLAMA_VISION_MODEL || process.env.VISION_MODEL || '';
 const typhoonMaxPdfPages = Math.max(1, Math.min(Number(process.env.TYPHOON_OCR_MAX_PDF_PAGES || 3), 10));
 const typhoonMaxUploadMb = Math.max(1, Math.min(Number(process.env.TYPHOON_OCR_MAX_UPLOAD_MB || 24), 80));
 const jsonBodyLimitMb = Math.max(1, Math.min(Number(process.env.JSON_BODY_LIMIT_MB || Math.max(32, typhoonMaxUploadMb + 8)), 120));
@@ -203,10 +205,12 @@ function safeAttachmentPath(day, filename) {
 function summarizeAttachments(attachments = []) {
   return attachments.map((item, index) => {
     const lines = [`${index + 1}. ${item.name || 'attachment'}`];
+    if (item.type) lines.push(`ชนิดไฟล์: ${item.type}`);
     if (item.path) lines.push(`ไฟล์: ${item.path}`);
     if (item.ocrStatus) lines.push(`สถานะ OCR: ${item.ocrStatus}`);
     if (item.ocrError) lines.push(`OCR error: ${String(item.ocrError).slice(0, 180)}`);
-    if (item.ocrText) lines.push(`ข้อความที่อ่านได้: ${String(item.ocrText).slice(0, 1200)}`);
+    if (item.visionText) lines.push(`สิ่งที่เห็นในรูป: ${String(item.visionText).slice(0, 1200)}`);
+    if (item.ocrText) lines.push(`ข้อความที่อ่านได้: ${String(item.ocrText).slice(0, 1800)}`);
     return lines.join(' | ');
   }).join('\n');
 }
@@ -248,6 +252,22 @@ function uploadToMarkdown(file) {
 function isOcrSupportedFile(name, type = '') {
   const ext = String(name || '').split('.').pop()?.toLowerCase() || '';
   return ['pdf', 'png', 'jpg', 'jpeg', 'webp'].includes(ext) || /^image\/(png|jpe?g|webp)$/i.test(type);
+}
+
+function isImageFile(name, type = '') {
+  const ext = String(name || '').split('.').pop()?.toLowerCase() || '';
+  return ['png', 'jpg', 'jpeg', 'webp'].includes(ext) || /^image\/(png|jpe?g|webp)$/i.test(type);
+}
+
+function isTextReadableFile(name, type = '') {
+  const ext = String(name || '').split('.').pop()?.toLowerCase() || '';
+  return ['txt', 'md', 'markdown', 'csv', 'json', 'log', 'yaml', 'yml', 'xml', 'html', 'css', 'js', 'jsx', 'ts', 'tsx', 'py', 'sh', 'ps1'].includes(ext)
+    || /^text\//i.test(type)
+    || ['application/json', 'application/xml', 'application/x-yaml'].includes(String(type || '').toLowerCase());
+}
+
+function decodeTextAttachment(base64, maxChars = 12000) {
+  return Buffer.from(stripDataUrl(base64), 'base64').toString('utf8').replace(/\u0000/g, '').slice(0, maxChars).trim();
 }
 
 function stripDataUrl(value) {
@@ -417,6 +437,32 @@ async function callTyphoonOcr(imagePath, pageLabel) {
     throw new Error(`Typhoon OCR HTTP ${response.status}: ${body.slice(0, 240)}`);
   }
 
+  const data = await response.json();
+  return String(data.response || '').trim();
+}
+
+async function callOllamaVision(file) {
+  if (!ollamaVisionModel || !isImageFile(file.name, file.type)) return '';
+  const base64 = stripDataUrl(file.base64);
+  const response = await fetchWithTimeout(`${ollamaVisionBaseUrl}/api/generate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: ollamaVisionModel,
+      prompt: [
+        'Describe this image for an internal Thai IT support assistant.',
+        'Focus on visible error messages, device/system names, UI state, warning lights, physical damage, and likely support-relevant clues.',
+        'Answer in Thai Markdown bullets. Do not invent text that is not visible.'
+      ].join('\n'),
+      images: [base64],
+      stream: false,
+      options: { temperature: 0.1, top_p: 0.7, num_ctx: 4096 }
+    })
+  }, Math.min(llmTimeoutMs, 45000));
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`Vision HTTP ${response.status}: ${body.slice(0, 180)}`);
+  }
   const data = await response.json();
   return String(data.response || '').trim();
 }
@@ -862,23 +908,33 @@ function buildReadyReply(ticket) {
   return `ข้อมูลเพียงพอสำหรับร่างใบงานแล้วครับ ยังไม่ถือว่าบันทึกจริงจนกว่าจะกด “บันทึกใบงาน” และได้รับเลข ticket\n\nสรุปข้อมูล:\n- ประเภท: ${ticket['ประเภท']}\n- ปัญหา: ${ticket['ปัญหา']}\n- ผลกระทบ: ${ticket['ผลกระทบ']}\n- ระดับความเร่งด่วน: ${ticket['ระดับความเร่งด่วน']}\n- ทีมที่เกี่ยวข้อง: ${ticket['ทีมที่เกี่ยวข้อง']}\n\nมีข้อมูลเพิ่มเติมอีกไหมครับ`;
 }
 
-function fallbackTriage(message, history = []) {
-  const allText = [...history.map((item) => item.content), message].join('\n').trim();
+function fallbackTriage(message, history = [], attachments = []) {
+  const attachmentSummary = summarizeAttachments(attachments);
+  const historyText = history.map((item) => item.content).filter(Boolean).join('\n').trim();
+  const allText = [historyText || message, attachmentSummary].filter(Boolean).join('\n').trim();
   const isCctv = /กล้อง|cctv|nvr|dvr|โกดัง|warehouse|no signal|offline/i.test(allText);
   const isPrinter = /ปริ้น|ปริน|printer|พิมพ์|เครื่องพิมพ์/i.test(allText);
+  const hasAttachment = Boolean(attachmentSummary);
   const category = isCctv ? 'CCTV/NVR' : isPrinter ? 'Printer' : 'Other';
-  const reply = isPrinter
+  const attachmentNames = attachments.map((item) => item.name).filter(Boolean).join(', ');
+  const problemSummary = hasAttachment
+    ? `${category === 'Other' ? 'ตรวจสอบไฟล์แนบ' : `ตรวจสอบปัญหา ${category}`} จากไฟล์ ${attachmentNames || 'ที่แนบ'}`
+    : allText || 'ยังไม่ได้ระบุปัญหา';
+  const attachmentReply = hasAttachment
+    ? `รับไฟล์แนบแล้วครับ ผมอ่านข้อความ/รายละเอียดที่อ่านได้จากไฟล์ไว้ประกอบร่างใบงานแล้ว\n\n${attachmentSummary.slice(0, 900)}\n\nต้องการให้ทีม IT ตรวจเรื่องอะไรจากไฟล์นี้ครับ`
+    : '';
+  const reply = attachmentReply || (isPrinter
     ? 'รับทราบครับ ขอข้อมูลเพิ่มนิดนึงครับ\n\n- เครื่องปริ้นอยู่บริเวณไหนของอาคาร/ชั้นไหนครับ\n- แผนกอะไรครับ\n- ขอเบอร์โทรติดต่อกลับได้ไหมครับ'
     : isCctv
       ? 'รับทราบครับ ขอข้อมูลเพิ่มนิดนึงครับ\n\n- กล้องอยู่บริเวณไหนครับ\n- ดูไม่ได้ทุกเครื่องหรือเฉพาะเครื่องคุณครับ\n- ขอเบอร์โทรติดต่อกลับได้ไหมครับ'
-      : 'รับทราบครับ ขอข้อมูลเพิ่มนิดนึงครับ\n\n- อาคาร/บริเวณไหนครับ\n- แผนกอะไรครับ\n- ขอเบอร์โทรติดต่อกลับได้ไหมครับ';
+      : 'รับทราบครับ ขอข้อมูลเพิ่มนิดนึงครับ\n\n- อาคาร/บริเวณไหนครับ\n- แผนกอะไรครับ\n- ขอเบอร์โทรติดต่อกลับได้ไหมครับ');
   return {
     agentReply: reply,
     isReadyToSave: false,
-    missingFields: ['ชื่อกล้อง/บริเวณ', 'ขอบเขตผู้ได้รับผลกระทบ', 'อาการที่พบ'],
+    missingFields: hasAttachment ? ['ประเด็นที่ต้องการให้ IT ตรวจจากไฟล์', 'สถานที่/ผู้เกี่ยวข้อง', 'ช่องทางติดต่อกลับ'] : ['ชื่อกล้อง/บริเวณ', 'ขอบเขตผู้ได้รับผลกระทบ', 'อาการที่พบ'],
     ticket: {
       'ประเภท': category,
-      'ปัญหา': allText || 'ยังไม่ได้ระบุปัญหา',
+      'ปัญหา': problemSummary,
       'ผลกระทบ': isCctv ? 'การตรวจสอบพื้นที่ผ่านระบบ CCTV อาจได้รับผลกระทบ' : isPrinter ? 'ผู้ใช้อาจไม่สามารถพิมพ์เอกสารได้ตามปกติ' : 'ต้องรอข้อมูลเพิ่มเติมเพื่อประเมินผลกระทบ',
       'ข้อมูลที่ได้รับ': allText || '-',
       'ระดับความเร่งด่วน': 'Medium',
@@ -893,7 +949,7 @@ async function callLocalGemma(messages, attachments = []) {
   const conversationText = history.map((item) => `${item.role}: ${item.content}`).join('\n');
   const attachmentText = summarizeAttachments(attachments);
   const rag = await searchKnowledge([conversationText || latestUser, attachmentText].filter(Boolean).join('\n'));
-  const fallback = fallbackTriage(latestUser, history);
+  const fallback = fallbackTriage(latestUser, history, attachments);
 
   const userInstruction = `${rag.context ? `Relevant Knowledge:\n${rag.context}\n\n` : ''}${attachmentText ? `Attachments:\n${attachmentText}\n\n` : ''}Conversation so far:\n${conversationText}\n\nอัปเดต ticket จากบริบททั้งหมดด้านบน ตอบกลับเป็น JSON object เท่านั้น`;
 
@@ -1369,8 +1425,18 @@ app.post('/api/attachments', uploadLimiter, async (req, res) => {
     let ocrText = '';
     let ocrOk = false;
     let ocrError = '';
+    let visionText = '';
+    let visionError = '';
     const ocrSupported = isOcrSupportedFile(file.name, file.type);
-    if (ocrSupported) {
+    const textReadable = isTextReadableFile(file.name, file.type);
+    if (textReadable) {
+      try {
+        ocrText = decodeTextAttachment(base64);
+        ocrOk = Boolean(ocrText.trim());
+      } catch (error) {
+        ocrError = error.message;
+      }
+    } else if (ocrSupported) {
       try {
         const status = await getTyphoonOcrStatus();
         if (!status.available) await startTyphoonOcrWorker();
@@ -1381,7 +1447,14 @@ app.post('/api/attachments', uploadLimiter, async (req, res) => {
         ocrError = error.message;
       }
     }
-    const ocrStatus = ocrSupported ? (ocrOk ? 'readable' : 'unreadable') : 'not-supported';
+    if (isImageFile(file.name, file.type)) {
+      try {
+        visionText = await callOllamaVision(file);
+      } catch (error) {
+        visionError = error.message;
+      }
+    }
+    const ocrStatus = (ocrSupported || textReadable) ? (ocrOk ? 'readable' : 'unreadable') : 'not-supported';
 
     res.json({
       ok: true,
@@ -1393,10 +1466,14 @@ app.post('/api/attachments', uploadLimiter, async (req, res) => {
         path: `data/attachments/${relativePath}`,
         downloadPath: `/api/admin/attachments/${day}/${safeName}`,
         ocrSupported,
+        textReadable,
         ocrStatus,
         ocrOk,
         ocrText,
-        ocrError
+        ocrError,
+        visionSupported: Boolean(ollamaVisionModel) && isImageFile(file.name, file.type),
+        visionText,
+        visionError
       }
     });
   } catch (error) {
@@ -1504,7 +1581,7 @@ app.post('/api/chat', chatLimiter, async (req, res) => {
   } catch {
     mode = 'fallback-rules';
     const latestUser = [...cleanMessages].reverse().find((item) => item.role === 'user')?.content || '';
-    result = { ...fallbackTriage(latestUser, cleanMessages), ragContext: await searchKnowledge(latestUser) };
+    result = { ...fallbackTriage(latestUser, cleanMessages, attachments), ragContext: await searchKnowledge([latestUser, summarizeAttachments(attachments)].filter(Boolean).join('\n')) };
   }
   res.json({ mode, ...result });
 });
@@ -1569,11 +1646,14 @@ app.post('/api/knowledge-chat', chatLimiter, async (req, res) => {
     const answer = await completeKnowledgeAnswer({ conversation, ragContext: rag.context, attachmentText, detailed });
     res.json({ mode: detailed ? 'detailed-gemma' : 'local-gemma', answer, ragContext: { count: rag.count, items: rag.items } });
   } catch {
+    const attachmentFallback = attachmentText
+      ? `ผมรับไฟล์แนบและอ่านข้อความที่อ่านได้แล้วครับ แต่โมเดล local ยังไม่พร้อมตอบแบบสมบูรณ์ตอนนี้\n\n## ข้อมูลจากไฟล์แนบ\n\n${attachmentText.slice(0, 2400)}\n\nลองถามต่อจากข้อความนี้ได้เลย หรือเปิด local model server แล้วส่งคำถามใหม่ครับ`
+      : '';
     res.json({
       mode: 'fallback-rag',
-      answer: rag.items.length
+      answer: attachmentFallback || (rag.items.length
         ? `ผมเจอเอกสารที่น่าจะเกี่ยวข้องครับ แต่ตอนนี้โมเดล local ยังไม่พร้อมตอบแบบละเอียด:\n\n${rag.items.map((item, index) => `${index + 1}. ${item.title}\n${item.snippet}`).join('\n\n')}`
-        : 'ตอนนี้โมเดล local ยังไม่พร้อมตอบครับ ลองถามใหม่อีกครั้ง หรือเช็กว่า local model server เปิดอยู่ครับ',
+        : 'ตอนนี้โมเดล local ยังไม่พร้อมตอบครับ ลองถามใหม่อีกครั้ง หรือเช็กว่า local model server เปิดอยู่ครับ'),
       ragContext: { count: rag.count, items: rag.items }
     });
   }

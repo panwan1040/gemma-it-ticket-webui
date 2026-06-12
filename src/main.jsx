@@ -6,6 +6,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import {
   AlertCircle,
   Archive,
+  ArrowUp,
   BookOpen,
   Bot,
   CheckCircle2,
@@ -15,20 +16,26 @@ import {
   Copy,
   Database,
   Download,
+  Edit3,
   FileText,
   Folder,
+  Globe2,
   Inbox,
+  Lightbulb,
   Loader2,
   Menu,
   MessageSquare,
   MoreVertical,
+  PanelLeft,
   Paperclip,
   Plus,
   RefreshCcw,
+  Rocket,
   Save,
   Search,
   Send,
   Settings,
+  Square,
   UploadCloud,
   User,
   X
@@ -114,13 +121,14 @@ function formatBytes(size = 0) {
   return `${(size / 1024 / 1024).toFixed(1)} MB`;
 }
 function attachmentStatusLabel(file = {}) {
-  if (file.ocrStatus === 'readable' || file.ocrOk) return 'เก็บไฟล์แล้ว · OCR อ่านได้';
-  if (file.ocrStatus === 'unreadable' || file.ocrError) return 'เก็บไฟล์แล้ว · OCR อ่านไม่ได้';
-  if (file.ocrStatus === 'not-supported') return 'เก็บไฟล์แล้ว · ไม่ต้อง OCR';
+  if (file.visionText) return 'เก็บไฟล์แล้ว · เข้าใจรูปได้';
+  if (file.ocrStatus === 'readable' || file.ocrOk) return file.textReadable ? 'เก็บไฟล์แล้ว · อ่านข้อความได้' : 'เก็บไฟล์แล้ว · OCR อ่านได้';
+  if (file.ocrStatus === 'unreadable' || file.ocrError) return 'เก็บไฟล์แล้ว · อ่านข้อความไม่ได้';
+  if (file.ocrStatus === 'not-supported') return 'เก็บไฟล์แล้ว · ใช้เป็นหลักฐาน';
   return 'เก็บไฟล์แล้ว';
 }
 function attachmentStatusTone(file = {}) {
-  if (file.ocrStatus === 'readable' || file.ocrOk) return 'ok';
+  if (file.visionText || file.ocrStatus === 'readable' || file.ocrOk) return 'ok';
   if (file.ocrStatus === 'unreadable' || file.ocrError) return 'warning';
   return 'neutral';
 }
@@ -142,6 +150,18 @@ function downloadBlob(filename, content, type) {
   link.click();
   link.remove();
   URL.revokeObjectURL(url);
+}
+function normalizeAttachmentList(items = []) {
+  const seen = new Set();
+  return items.filter(Boolean).filter((item) => {
+    const key = item.id || item.path || item.name;
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+function collectConversationAttachments(messages = []) {
+  return normalizeAttachmentList(messages.flatMap((item) => item.attachments || []));
 }
 function escapeHtml(value) {
   return String(value || '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
@@ -225,30 +245,35 @@ function useRoute() {
 function AppShell({ config, path, navigate, children }) {
   const active = routeItems.find((item) => item.path === path) || publicNavItems[0];
   const mobileValue = publicNavItems.some((item) => item.path === active.path) ? active.path : '';
-  const defaultEnglishTagline = 'AI-assisted ticket intake for internal support teams';
-  const brandTagline = config.appTagline === defaultEnglishTagline ? defaultConfig.appTagline : config.appTagline;
+  const historyLabel = path === '/knowledge-chat' ? 'สวัสดี' : path === '/' ? 'แจ้งปัญหา IT' : active.label;
   return <main className="app-shell">
     <aside className="side-nav">
-      <div className="brand-block">
-        <div className="brand-mark"><ClipboardList size={18} /></div>
-        <div>
-          <strong>{config.appName}</strong>
-          <span>{brandTagline}</span>
-        </div>
+      <div className="window-dots" aria-hidden="true">
+        <span /><span /><span />
+        <PanelLeft size={18} />
       </div>
       <nav className="nav-list">
-        {publicNavItems.map((item) => {
-          const Icon = item.icon;
-          const activeItem = item.path === active.path;
-          return <button key={item.path} className={cn('nav-item', activeItem && 'active')} onClick={() => navigate(item.path)}>
-            <Icon size={17} />
-            <span><strong>{item.label}</strong><small>{item.description}</small></span>
-          </button>;
-        })}
+        <button className={cn('nav-item', path === '/' && 'active')} onClick={() => navigate('/')}>
+          <Edit3 size={18} />
+          <span><strong>New Chat</strong></span>
+        </button>
+        <button className={cn('nav-item', path === '/knowledge-chat' && 'active')} onClick={() => navigate('/knowledge-chat')}>
+          <Rocket size={18} />
+          <span><strong>Launch</strong></span>
+        </button>
       </nav>
+      <div className="today-block">
+        <small>Today</small>
+        <button className="history-item" onClick={() => navigate(path === '/knowledge-chat' ? '/knowledge-chat' : '/')}>{historyLabel}</button>
+      </div>
+      <div className="feature-links">
+        <button onClick={() => navigate('/ocr')} className={path === '/ocr' ? 'active' : ''}><FileText size={15} />OCR Studio</button>
+        <button onClick={() => navigate('/electricity-bills')} className={path === '/electricity-bills' ? 'active' : ''}><Database size={15} />บิลค่าไฟ</button>
+        <button onClick={() => navigate('/admin')} className={path === '/admin' ? 'active' : ''}><Archive size={15} />Knowledge</button>
+      </div>
       <div className="nav-foot">
-        <span>ทำงานบนเครื่อง</span>
-        <small>ข้อมูลอยู่ในเครื่องก่อน และส่ง webhook ได้เมื่อพร้อม</small>
+        <span>{config.appName}</span>
+        <small>gemma4:e4b-it-qat · Ollama</small>
       </div>
     </aside>
     <section className="work-area">
@@ -300,30 +325,55 @@ function ChatBubble({ item }) {
     window.setTimeout(() => setCopied(false), 1400);
   }
   return <motion.div className={cn('message-row', isUser && 'from-user')} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
-    {!isUser ? <div className="avatar muted"><Bot size={15} /></div> : null}
+    {!isUser ? <div className="thought-line"><Lightbulb size={18} />Thought for a moment</div> : null}
     <div className={cn('bubble', isUser ? 'bubble-user' : 'bubble-agent')}>
-      {!isUser && visibleText ? <button className="bubble-copy" onClick={copyText} title="คัดลอกคำตอบ">{copied ? <CheckCircle2 size={13} /> : <Copy size={13} />}{copied ? 'คัดลอกแล้ว' : 'คัดลอก'}</button> : null}
       {visibleText ? <MarkdownMessage>{visibleText}</MarkdownMessage> : null}
       {item.attachments?.length ? <div className="bubble-attachments">{item.attachments.map((file) => <span key={file.id || file.name}><Paperclip size={13} />{file.name}<small>{attachmentStatusLabel(file)}</small></span>)}</div> : null}
+      {!isUser && visibleText ? <button className="bubble-copy" onClick={copyText} title="คัดลอกคำตอบ">{copied ? <CheckCircle2 size={15} /> : <Copy size={15} />}</button> : null}
     </div>
-    {isUser ? <div className="avatar"><User size={15} /></div> : null}
   </motion.div>;
 }
-function ChatComposer({ value, onChange, onSend, disabled, placeholder, helper, compact = false, onFiles, attachments = [], uploading = false }) {
+function ChatComposer({ value, onChange, onSend, disabled, placeholder, helper, compact = false, onFiles, onRemoveAttachment, attachments = [], uploading = false, busy = false }) {
+  const [isDragging, setIsDragging] = useState(false);
+  function handleFiles(fileList) {
+    if (!onFiles) return;
+    onFiles(fileList);
+  }
   return <div className="composer-wrap">
-    <div className={cn('composer', compact && 'compact')}>
-      {attachments.length ? <div className="attachment-strip">{attachments.map((item) => <span key={item.id || item.name} className={cn('attachment-chip', `attachment-${attachmentStatusTone(item)}`)}><Paperclip size={13} />{item.name}<small>{attachmentStatusLabel(item)}</small></span>)}</div> : null}
+    <div
+      className={cn('composer', compact && 'compact', isDragging && 'dragging')}
+      onDragOver={(event) => {
+        if (!onFiles) return;
+        event.preventDefault();
+        setIsDragging(true);
+      }}
+      onDragLeave={() => setIsDragging(false)}
+      onDrop={(event) => {
+        if (!onFiles) return;
+        event.preventDefault();
+        setIsDragging(false);
+        handleFiles(event.dataTransfer.files);
+      }}
+    >
+      {attachments.length ? <div className="attachment-strip">{attachments.map((item) => <span key={item.id || item.name} className={cn('attachment-chip', `attachment-${attachmentStatusTone(item)}`)}>
+        <Paperclip size={13} />
+        <span className="attachment-name">{item.name}</span>
+        <small>{attachmentStatusLabel(item)}</small>
+        {onRemoveAttachment ? <button type="button" onClick={() => onRemoveAttachment(item)} aria-label={`ลบไฟล์ ${item.name}`}><X size={12} /></button> : null}
+      </span>)}</div> : null}
       <textarea value={value} placeholder={placeholder} onChange={(event) => onChange(event.target.value)} onKeyDown={(event) => {
         if (event.key === 'Enter' && !event.shiftKey) {
           event.preventDefault();
-          onSend();
+          if (!disabled && !uploading) onSend();
         }
       }} />
       <div className="composer-row">
         <span>{uploading ? 'กำลังแนบไฟล์...' : helper}</span>
         <div className="composer-actions">
-          {onFiles ? <label className="attach-btn" title="แนบไฟล์"><Paperclip size={16} /><span className="attach-text">แนบไฟล์</span><input type="file" multiple onChange={(event) => onFiles(event.target.files)} /></label> : null}
-          <Button onClick={onSend} disabled={disabled}><Send size={16} />ส่งข้อความ</Button>
+          {onFiles ? <label className="attach-btn" title="แนบไฟล์"><Plus size={20} /><input type="file" multiple onChange={(event) => { handleFiles(event.target.files); event.target.value = ''; }} /></label> : null}
+          <button className="composer-tool" type="button" title="ไฟล์ รูป และ OCR"><Globe2 size={19} /></button>
+          <button className="model-pill" type="button" title="โมเดลที่ใช้งาน">gemma4:e4b-it-qat <ChevronRight size={14} /></button>
+          <Button className="send-circle" onClick={onSend} disabled={disabled}>{busy || uploading ? <Square size={15} /> : <ArrowUp size={18} />}</Button>
         </div>
       </div>
     </div>
@@ -359,8 +409,8 @@ function buildChatSummary(ticket, missingFields = [], isSaved = false, saveStatu
   if (ticket.department) rows.push(`- แผนก: ${ticket.department}`);
   if (ticket.contact) rows.push(`- ติดต่อกลับ: ${ticket.contact}`);
   if (ticket['ผลกระทบ']) rows.push(`- ผลกระทบ: ${ticket['ผลกระทบ']}`);
-  if (ticket['ระดับความเร่งด่วน']) rows.push(`- ความเร่งด่วน: ${ticket['ระดับความเร่งด่วน']}`);
   if (!rows.length) return '';
+  if (ticket['ระดับความเร่งด่วน']) rows.push(`- ความเร่งด่วน: ${ticket['ระดับความเร่งด่วน']}`);
   const missing = missingFields.length ? `\n\nข้อมูลที่อาจถามเพิ่ม:\n${missingFields.map((item) => `- ${item}`).join('\n')}` : '';
   const saved = isSaved ? `\n\nสถานะ: ${saveStatus || 'บันทึกใบงานแล้ว'}` : '';
   return `สรุปข้อมูล\n${rows.join('\n')}${saved}${missing}`;
@@ -425,13 +475,46 @@ function TicketIntakePage({ config }) {
   const [lastAgentReply, setLastAgentReply] = useState('');
   const [handoffNotice, setHandoffNotice] = useState('');
   const [sheetOpen, setSheetOpen] = useState(false);
+  const [attachments, setAttachments] = useState([]);
+  const [uploadingAttachment, setUploadingAttachment] = useState(false);
   const examples = ['เครื่องปริ้นพิมพ์ไม่ได้', 'Wi-Fi ใช้งานไม่ได้', 'คอมเปิดไม่ติด', 'กล้องดูไม่ได้', 'เข้าอีเมลไม่ได้'];
   const summary = useMemo(() => buildChatSummary(ticket, missingFields, saveState === 'saved', saveStatus), [ticket, missingFields, saveState, saveStatus]);
 
+  async function uploadTicketFiles(fileList) {
+    const files = Array.from(fileList || []).filter((file) => file && file.size > 0);
+    if (!files.length) return;
+    setUploadingAttachment(true);
+    try {
+      const uploaded = [];
+      for (const file of files) {
+        const base64 = await readFileAsBase64(file);
+        const response = await fetch('/api/attachments', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ file: { name: file.name, type: file.type, base64 } })
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'upload failed');
+        uploaded.push(data.attachment);
+      }
+      setAttachments((current) => normalizeAttachmentList([...current, ...uploaded]));
+    } catch (error) {
+      setMessages((current) => [...current, { role: 'assistant', content: `แนบไฟล์ไม่สำเร็จครับ: ${error.message}` }]);
+    } finally {
+      setUploadingAttachment(false);
+    }
+  }
+  function removeTicketAttachment(file) {
+    setAttachments((current) => current.filter((item) => (item.id || item.name) !== (file.id || file.name)));
+  }
+
   async function submitTicketMessage(rawText, options = {}) {
     const userText = String(rawText || '').trim();
-    if (!userText || isThinking) return;
-    const visibleMessages = [...messages, { role: 'user', content: userText, displayContent: userText }];
+    const activeAttachments = normalizeAttachmentList(options.attachments || attachments);
+    if ((!userText && !activeAttachments.length) || isThinking) return;
+    const content = userText || 'ช่วยอ่านไฟล์แนบนี้และร่างใบงาน IT จากข้อมูลที่เกี่ยวข้อง';
+    const displayContent = userText || 'ช่วยอ่านไฟล์แนบนี้และร่างใบงาน IT จากข้อมูลที่เกี่ยวข้อง';
+    const visibleMessages = [...messages, { role: 'user', content, displayContent, attachments: activeAttachments }];
     const nextMessages = [...visibleMessages.map(({ role, content }) => ({ role, content }))];
     setMessages(visibleMessages);
     setInput('');
@@ -443,7 +526,7 @@ function TicketIntakePage({ config }) {
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: nextMessages })
+        body: JSON.stringify({ messages: nextMessages, attachments: activeAttachments })
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'chat failed');
@@ -474,9 +557,11 @@ function TicketIntakePage({ config }) {
     sessionStorage.removeItem('ticket-handoff');
     try {
       const handoff = JSON.parse(raw);
+      const handoffAttachments = normalizeAttachmentList(handoff.attachments || []);
+      setAttachments(handoffAttachments);
       setMessages([{ role: 'assistant', content: 'ผมย้ายมาหน้าแจ้งปัญหาให้แล้วครับ กำลังร่างใบงานจากข้อมูลที่คุณส่งมา' }]);
       setHandoffNotice('กำลังนำข้อมูลจากแชท AI มาร่างใบงาน ยังไม่ได้บันทึกเป็น ticket จริง');
-      setTimeout(() => submitTicketMessage(handoff.text || '', { openDraft: true }), 50);
+      setTimeout(() => submitTicketMessage(handoff.text || '', { openDraft: true, attachments: handoffAttachments }), 50);
     } catch {}
   }, []);
   async function saveTicket() {
@@ -491,7 +576,7 @@ function TicketIntakePage({ config }) {
           sourceMessage: messages.filter((item) => item.role === 'user').map((item) => item.content).join('\n'),
           agentReply: lastAgentReply,
           transcript: messages,
-          attachments: [],
+          attachments,
           ticket
         })
       });
@@ -527,23 +612,18 @@ function TicketIntakePage({ config }) {
     setSaveState('idle');
     setLastAgentReply('');
     setHandoffNotice('');
+    setAttachments([]);
   }
 
   return <div className="page chat-page">
-    <PageTop
-      title="แจ้งปัญหา IT"
-      description="พิมพ์อาการสั้นๆ ได้เลย ระบบจะถามต่อเท่าที่จำเป็น แล้วช่วยร่างใบงานให้ทีม IT"
-      actions={<><StatusPill tone={mode === 'error' ? 'danger' : mode === 'thinking' ? 'info' : 'ok'}>{friendlyStatus(mode)}</StatusPill><Button variant="secondary" onClick={resetChat}><RefreshCcw size={16} />เปิดเคสใหม่</Button></>}
-    />
-    {!messages.length ? <WorkflowStrip items={[
-      { title: 'แจ้งอาการ', detail: 'บอกระบบ/อุปกรณ์และจุดที่มีปัญหา', icon: MessageSquare },
-      { title: 'ถามต่อเท่าที่จำเป็น', detail: 'AI เก็บสถานที่ ผลกระทบ และช่องทางติดต่อ', icon: Bot },
-      { title: 'ตรวจร่างใบงาน', detail: 'แก้ไขก่อนกดบันทึกเพื่อรับ Ticket ID', icon: ClipboardList }
-    ]} /> : null}
+    <div className="chat-top-actions">
+      <StatusPill tone={mode === 'error' ? 'danger' : mode === 'thinking' ? 'info' : 'ok'}>{friendlyStatus(mode)}</StatusPill>
+      <IconButton label="เปิดเคสใหม่" onClick={resetChat}><RefreshCcw size={17} /></IconButton>
+    </div>
     {handoffNotice ? <div className="handoff-banner"><strong>ร่างใบงาน</strong><span>{handoffNotice}</span><Button variant="secondary" size="sm" onClick={() => setSheetOpen(true)}>ดูร่างใบงาน</Button></div> : null}
     <section className="chat-canvas">
       <div className="chat-stream">
-        {messages.length ? messages.map((item, index) => <ChatBubble key={`${item.role}-${index}`} item={item} />) : <EmptyState icon={ClipboardList} title="เริ่มจากอาการที่พบ" description="ตัวอย่าง: เครื่องปริ้นพิมพ์ไม่ได้, Wi‑Fi ใช้งานไม่ได้, คอมเปิดไม่ติด หรือกล้องดูไม่ได้">
+        {messages.length ? messages.map((item, index) => <ChatBubble key={`${item.role}-${index}`} item={item} />) : <EmptyState icon={ClipboardList} title="สวัสดี" description="พิมพ์อาการที่พบ หรือแนบรูป/ไฟล์ให้ AI ช่วยอ่านและร่างใบงาน IT">
           <div className="hint-grid">
             {['อุปกรณ์/ระบบที่มีปัญหา', 'สถานที่หรือจุดติดตั้ง', 'อาการที่พบ', 'ผลกระทบ', 'เวลาเริ่มเกิดปัญหา'].map((item) => <span key={item}><CheckCircle2 size={14} />{item}</span>)}
           </div>
@@ -556,8 +636,8 @@ function TicketIntakePage({ config }) {
         <ChevronRight size={18} />
       </motion.button> : null}
     </section>
-    <ChatComposer value={input} onChange={setInput} onSend={sendMessage} disabled={!input.trim() || isThinking} placeholder="พิมพ์ปัญหาที่ต้องการแจ้ง IT..." helper="แจ้งอาการ สถานที่ ผลกระทบ หรือเบอร์ติดต่อกลับได้เลย" compact />
-    <TicketSummarySheet open={sheetOpen} onClose={() => setSheetOpen(false)} ticket={ticket} setTicket={setTicket} missingFields={missingFields} saveTicket={saveTicket} isSaving={isSaving} saveState={saveState} saveStatus={saveStatus} />
+    <ChatComposer value={input} onChange={setInput} onSend={sendMessage} disabled={(!input.trim() && !attachments.length) || isThinking || uploadingAttachment} placeholder="Send a message" helper="แนบ screenshot, PDF, log, txt, json หรือรูปถ่ายอุปกรณ์ได้" compact onFiles={uploadTicketFiles} onRemoveAttachment={removeTicketAttachment} attachments={attachments} uploading={uploadingAttachment} busy={isThinking} />
+    <TicketSummarySheet open={sheetOpen} onClose={() => setSheetOpen(false)} ticket={ticket} setTicket={setTicket} missingFields={missingFields} saveTicket={saveTicket} isSaving={isSaving} saveState={saveState} saveStatus={saveStatus} attachments={attachments} />
   </div>;
 }
 
@@ -940,6 +1020,9 @@ function KnowledgeChatPage() {
       setUploadingAttachment(false);
     }
   }
+  function removeKnowledgeAttachment(file) {
+    setAttachments((current) => current.filter((item) => (item.id || item.name) !== (file.id || file.name)));
+  }
   async function sendMessage() {
     const userText = input.trim();
     if ((!userText && !attachments.length) || isThinking) return;
@@ -994,24 +1077,19 @@ function KnowledgeChatPage() {
   }
   function openTicketFromConversation() {
     const transcript = messages.map((item) => `${item.role === 'user' ? 'User' : 'AI'}: ${item.displayContent || item.content}`).join('\n\n');
-    goToTicketIntake({ text: `ช่วยร่างใบงานจากบทสนทนาแชท AI นี้\n\n${transcript}` });
+    goToTicketIntake({ text: `ช่วยร่างใบงานจากบทสนทนาแชท AI นี้\n\n${transcript}`, attachments: collectConversationAttachments(messages) });
   }
 
   return <div className="page knowledge-page">
-    <PageTop
-      title="แชท AI"
-      description="ถามงานทั่วไป สรุปเอกสาร หรือใช้เป็นพื้นที่คิดก่อนส่งต่อเป็นใบงาน"
-      actions={<><label className="detail-toggle"><input type="checkbox" checked={detailedMode} onChange={(event) => setDetailedMode(event.target.checked)} />ตอบละเอียดขึ้น</label><StatusPill tone={mode === 'error' ? 'danger' : mode === 'thinking' ? 'info' : 'ok'}>{status}</StatusPill><Button variant="secondary" onClick={() => setSourceOpen(true)}><BookOpen size={16} />แหล่งอ้างอิง ({sources.length})</Button></>}
-    />
-    {!messages.length ? <WorkflowStrip items={[
-      { title: 'ถามหรือแนบไฟล์', detail: 'คุยทั่วไป อธิบายงาน หรือสรุปเอกสาร', icon: MessageSquare },
-      { title: 'อ้างอิงเมื่อมีข้อมูล', detail: 'ถ้ามีเอกสารในคลัง ระบบจะแสดงแหล่งอ้างอิง', icon: BookOpen },
-      { title: 'ส่งต่อเป็นใบงาน', detail: 'เปิดใบงานจากบทสนทนาได้เมื่อเป็นเรื่องที่ต้องให้ IT ทำต่อ', icon: ClipboardList }
-    ]} /> : null}
+    <div className="chat-top-actions">
+      <label className="detail-toggle"><input type="checkbox" checked={detailedMode} onChange={(event) => setDetailedMode(event.target.checked)} />คิดละเอียด</label>
+      <StatusPill tone={mode === 'error' ? 'danger' : mode === 'thinking' ? 'info' : 'ok'}>{status}</StatusPill>
+      <IconButton label={`แหล่งอ้างอิง ${sources.length}`} onClick={() => setSourceOpen(true)}><BookOpen size={17} /></IconButton>
+    </div>
     <section className="knowledge-layout">
       <div className="chat-canvas flat">
         <div className="chat-stream">
-          {messages.length ? messages.map((item, index) => <ChatBubble key={`${item.role}-${index}`} item={item} />) : <EmptyState icon={BookOpen} title="คุยกับ AI หรือแนบไฟล์ให้อ่าน" description="ถามทั่วไปได้เหมือน chatbot ปกติ และถ้ามีไฟล์แนบหรือเอกสารในคลัง ระบบจะใช้อ้างอิงให้">
+          {messages.length ? messages.map((item, index) => <ChatBubble key={`${item.role}-${index}`} item={item} />) : <EmptyState icon={BookOpen} title="สวัสดี" description="คุยกับ AI หรือแนบไฟล์ให้ช่วยอ่าน สรุป และส่งต่อเป็นใบงานได้">
             <div className="chip-row">{prompts.map((item) => <button key={item} onClick={() => setInput(item)}>{item}</button>)}</div>
           </EmptyState>}
           {isThinking ? <ProcessingCard detailed={detailedMode} step={processStep} /> : null}
@@ -1020,7 +1098,7 @@ function KnowledgeChatPage() {
       </div>
       <SourcePanel open={sourceOpen} onClose={() => setSourceOpen(false)} sources={sources} />
     </section>
-    <ChatComposer value={input} onChange={setInput} onSend={sendMessage} disabled={(!input.trim() && !attachments.length) || isThinking || uploadingAttachment} placeholder="ถามอะไรก็ได้ หรือแนบไฟล์เพื่อให้ช่วยอ่าน..." helper="คุยทั่วไปได้ ถ้าต้องการเปิดใบงานให้พิมพ์ว่าเปิด ticket หรือไปหน้าแจ้งปัญหา" compact onFiles={uploadKnowledgeFiles} attachments={attachments} uploading={uploadingAttachment} />
+    <ChatComposer value={input} onChange={setInput} onSend={sendMessage} disabled={(!input.trim() && !attachments.length) || isThinking || uploadingAttachment} placeholder="Send a message" helper="ลากไฟล์มาวางได้ รองรับรูป/PDF/TXT/JSON/CSV/log" compact onFiles={uploadKnowledgeFiles} onRemoveAttachment={removeKnowledgeAttachment} attachments={attachments} uploading={uploadingAttachment} busy={isThinking} />
   </div>;
 }
 function ProcessingCard({ detailed, step }) {
