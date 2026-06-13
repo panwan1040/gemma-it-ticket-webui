@@ -45,7 +45,8 @@ import './styles.css';
 const defaultConfig = {
   appName: 'Local AI Helpdesk',
   appTagline: 'รับเรื่อง แชทเอกสาร และร่างใบงานบนเครื่อง',
-  appDescription: 'ช่วยเก็บรายละเอียดปัญหา สรุปข้อมูล และบันทึกใบงานสำหรับทีม IT'
+  appDescription: 'ช่วยเก็บรายละเอียดปัญหา สรุปข้อมูล และบันทึกใบงานสำหรับทีม IT',
+  modelName: 'gemma4:e4b-it-qat'
 };
 
 const publicNavItems = [
@@ -330,7 +331,7 @@ function AppShell({ config, path, navigate, children }) {
       </div>
       <div className="nav-foot">
         <span>{config.appName}</span>
-        <small>gemma4:e4b-it-qat · Ollama</small>
+        <small>{config.modelName} · Ollama</small>
       </div>
     </aside>
     <section className="work-area">
@@ -478,11 +479,11 @@ function MessageList({ messages, pending, pendingStatus, hasPendingAttachments, 
   </div>;
 }
 
-function ModelSelector({ model = 'gemma4:e4b-it-qat' }) {
+function ModelSelector({ model = defaultConfig.modelName }) {
   return <button className="model-pill" type="button" title="โมเดลที่ใช้งาน">{model} <ChevronRight size={14} /></button>;
 }
 
-function Composer({ value, onChange, onSend, disabled, placeholder, helper, compact = false, onFiles, onRemoveAttachment, attachments = [], uploading = false, busy = false }) {
+function Composer({ value, onChange, onSend, disabled, placeholder, helper, compact = false, onFiles, onRemoveAttachment, attachments = [], uploading = false, busy = false, model = defaultConfig.modelName }) {
   const [isDragging, setIsDragging] = useState(false);
   function handleFiles(fileList) {
     if (!onFiles) return;
@@ -516,7 +517,7 @@ function Composer({ value, onChange, onSend, disabled, placeholder, helper, comp
         <div className="composer-actions">
           {onFiles ? <label className="attach-btn" title="แนบไฟล์"><Plus size={20} /><input type="file" multiple onChange={(event) => { handleFiles(event.target.files); event.target.value = ''; }} /></label> : null}
           <button className="composer-tool" type="button" title="ไฟล์ รูป และ OCR"><Globe2 size={19} /></button>
-          <ModelSelector />
+          <ModelSelector model={model} />
           <Button className="send-circle" onClick={onSend} disabled={disabled}>{busy || uploading ? <Square size={15} /> : <ArrowUp size={18} />}</Button>
         </div>
       </div>
@@ -747,7 +748,7 @@ function TicketIntakePage({ config }) {
       const response = await fetch('/api/chat/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: nextMessages, attachments: apiAttachments, model: 'gemma4:e4b-it-qat' })
+        body: JSON.stringify({ messages: nextMessages, attachments: apiAttachments })
       });
       if (!response.ok) throw new Error(`chat stream failed (${response.status})`);
       await readSseStream(response, (event, data) => {
@@ -870,7 +871,7 @@ function TicketIntakePage({ config }) {
       <IconButton label="เปิดเคสใหม่" onClick={resetChat}><RefreshCcw size={17} /></IconButton>
     </>}
     notice={handoffNotice ? <div className="handoff-banner"><strong>ร่าง Ticket</strong><span>{handoffNotice}</span><Button variant="secondary" size="sm" onClick={openTicketDraft}>ดูร่าง / เปิด Ticket</Button></div> : null}
-    composer={<Composer value={input} onChange={setInput} onSend={sendMessage} disabled={(!input.trim() && !attachments.length) || isThinking} placeholder="Send a message" helper="แนบ screenshot, PDF, log, txt, json หรือรูปถ่ายอุปกรณ์ได้" compact onFiles={uploadTicketFiles} onRemoveAttachment={removeTicketAttachment} attachments={attachments} uploading={uploadingAttachment} busy={isThinking} />}
+    composer={<Composer value={input} onChange={setInput} onSend={sendMessage} disabled={(!input.trim() && !attachments.length) || isThinking} placeholder="Send a message" helper="แนบ screenshot, PDF, log, txt, json หรือรูปถ่ายอุปกรณ์ได้" compact onFiles={uploadTicketFiles} onRemoveAttachment={removeTicketAttachment} attachments={attachments} uploading={uploadingAttachment} busy={isThinking} model={config.modelName} />}
   >
       <MessageList
         messages={messages}
@@ -1244,7 +1245,7 @@ function ElectricityBillPage() {
   </div>;
 }
 
-function KnowledgeChatPage() {
+function KnowledgeChatPage({ config = defaultConfig }) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [status, setStatus] = useState('พร้อมตอบคำถาม');
@@ -1363,7 +1364,7 @@ function KnowledgeChatPage() {
       <StatusPill tone={mode === 'error' ? 'danger' : mode === 'thinking' ? 'info' : 'ok'}>{status}</StatusPill>
       <IconButton label={`แหล่งอ้างอิง ${sources.length}`} onClick={() => setSourceOpen(true)}><BookOpen size={17} /></IconButton>
     </>}
-    composer={<Composer value={input} onChange={setInput} onSend={sendMessage} disabled={(!input.trim() && !attachments.length) || isThinking || uploadingAttachment} placeholder="Send a message" helper="ลากไฟล์มาวางได้ รองรับรูป/PDF/TXT/JSON/CSV/log" compact onFiles={uploadKnowledgeFiles} onRemoveAttachment={removeKnowledgeAttachment} attachments={attachments} uploading={uploadingAttachment} busy={isThinking} />}
+    composer={<Composer value={input} onChange={setInput} onSend={sendMessage} disabled={(!input.trim() && !attachments.length) || isThinking || uploadingAttachment} placeholder="Send a message" helper="ลากไฟล์มาวางได้ รองรับรูป/PDF/TXT/JSON/CSV/log" compact onFiles={uploadKnowledgeFiles} onRemoveAttachment={removeKnowledgeAttachment} attachments={attachments} uploading={uploadingAttachment} busy={isThinking} model={config.modelName} />}
   >
       <MessageList
         messages={messages}
@@ -1689,7 +1690,7 @@ function App() {
   useEffect(() => {
     fetch('/api/config').then((res) => res.json()).then((data) => setConfig({ ...defaultConfig, ...data })).catch(() => setConfig(defaultConfig));
   }, []);
-  const page = path === '/knowledge-chat' ? <KnowledgeChatPage /> : path === '/electricity-bills' ? <ElectricityBillPage /> : path === '/ocr' ? <OcrStudioPage /> : path === '/admin' ? <DocumentLibraryPage /> : <TicketIntakePage config={config} />;
+  const page = path === '/knowledge-chat' ? <KnowledgeChatPage config={config} /> : path === '/electricity-bills' ? <ElectricityBillPage /> : path === '/ocr' ? <OcrStudioPage /> : path === '/admin' ? <DocumentLibraryPage /> : <TicketIntakePage config={config} />;
   return <AppShell config={config} path={path} navigate={navigate}>{page}</AppShell>;
 }
 

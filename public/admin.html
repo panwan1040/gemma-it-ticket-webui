@@ -276,7 +276,7 @@
         const data = await api('/api/admin/ocr/start', { method: 'POST', body: '{}' });
         readerReady = Boolean(data.status?.available);
         await loadReaderStatus();
-        if (!readerReady) throw new Error(data.status?.detail || 'ตัวอ่านเอกสารยังไม่พร้อม กรุณาติดตั้งด้วย scripts/install_typhoon_ocr.sh');
+        if (!readerReady) throw new Error(data.status?.detail || 'ตัวอ่านเอกสารยังไม่พร้อม กรุณารัน npm run setup เพื่อติดตั้งโมเดล OCR');
       }
 
       async function uploadFiles(fileList) {

@@ -17,9 +17,10 @@ if (isProduction && unsafeAdminAuthValues.has(configuredAdminAuth)) {
 }
 const adminAuth = configuredAdminAuth || 'admin:dev-local-only';
 const port = Number(process.env.PORT || 3000);
-const llmBaseUrl = process.env.LLM_BASE_URL || 'http://127.0.0.1:18080/v1';
+const ollamaBaseUrl = (process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434').replace(/\/v1\/?$/, '').replace(/\/$/, '');
+const ollamaOpenAiBaseUrl = `${ollamaBaseUrl}/v1`;
 const llmTimeoutMs = Math.max(5000, Math.min(Number(process.env.LLM_TIMEOUT_MS || 25000), 120000));
-let llmModel = process.env.LLM_MODEL || 'gemma4-e4b-qat';
+const llmModel = process.env.LLM_MODEL || 'gemma4:e4b-it-qat';
 const sheetWebhookUrl = process.env.GOOGLE_SHEET_WEBHOOK_URL || '';
 const electricityBillWebhookUrl = process.env.ELECTRICITY_BILL_WEBHOOK_URL || '';
 const localLogPath = path.join(process.cwd(), 'data', 'tickets.jsonl');
@@ -32,12 +33,10 @@ const knowledgeDir = path.join(process.cwd(), 'knowledge');
 const appConfig = {
   appName: process.env.APP_NAME || 'Local AI Helpdesk',
   appTagline: process.env.APP_TAGLINE || 'AI-assisted ticket intake for internal support teams',
-  appDescription: process.env.APP_DESCRIPTION || 'Collect issue details, draft tickets, and save them to your support workflow.'
+  appDescription: process.env.APP_DESCRIPTION || 'Collect issue details, draft tickets, and save them to your support workflow.',
+  modelName: llmModel
 };
-const typhoonBaseUrl = process.env.TYPHOON_OCR_BASE_URL || 'http://127.0.0.1:11434';
 const typhoonModel = process.env.TYPHOON_OCR_MODEL || 'scb10x/typhoon-ocr1.5-3b';
-const ollamaVisionBaseUrl = process.env.OLLAMA_VISION_BASE_URL || process.env.OLLAMA_BASE_URL || typhoonBaseUrl;
-const ollamaVisionModel = process.env.OLLAMA_VISION_MODEL || process.env.VISION_MODEL || '';
 const typhoonMaxPdfPages = Math.max(1, Math.min(Number(process.env.TYPHOON_OCR_MAX_PDF_PAGES || 3), 10));
 const typhoonMaxUploadMb = Math.max(1, Math.min(Number(process.env.TYPHOON_OCR_MAX_UPLOAD_MB || 24), 80));
 const jsonBodyLimitMb = Math.max(1, Math.min(Number(process.env.JSON_BODY_LIMIT_MB || Math.max(32, typhoonMaxUploadMb + 8)), 120));
@@ -416,7 +415,7 @@ async function pdfToImages(pdfPath, outDir) {
 
 async function callTyphoonOcr(imagePath, pageLabel) {
   const imageBase64 = await fs.readFile(imagePath, 'base64');
-  const response = await fetch(`${typhoonBaseUrl}/api/generate`, {
+  const response = await fetch(`${ollamaBaseUrl}/api/generate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -443,13 +442,13 @@ async function callTyphoonOcr(imagePath, pageLabel) {
 }
 
 async function callOllamaVision(file) {
-  if (!ollamaVisionModel || !isImageFile(file.name, file.type)) return '';
+  if (!isImageFile(file.name, file.type)) return '';
   const base64 = stripDataUrl(file.base64);
-  const response = await fetchWithTimeout(`${ollamaVisionBaseUrl}/api/generate`, {
+  const response = await fetchWithTimeout(`${ollamaBaseUrl}/api/generate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      model: ollamaVisionModel,
+      model: llmModel,
       prompt: [
         'Describe this image for an internal Thai IT support assistant.',
         'Focus on visible error messages, device/system names, UI state, warning lights, physical damage, and likely support-relevant clues.',
@@ -710,7 +709,7 @@ async function getTyphoonOcrStatus() {
   let reachable = false;
   let detail = 'Ollama/Typhoon OCR ยังไม่เปิด';
   try {
-    const response = await fetch(`${typhoonBaseUrl}/api/tags`);
+    const response = await fetch(`${ollamaBaseUrl}/api/tags`);
     const data = await response.json();
     const models = Array.isArray(data.models) ? data.models : [];
     reachable = response.ok;
@@ -721,12 +720,12 @@ async function getTyphoonOcrStatus() {
   return {
     available,
     reachable,
-    baseUrl: typhoonBaseUrl,
+    baseUrl: ollamaBaseUrl,
     model: typhoonModel,
     maxPdfPages: typhoonMaxPdfPages,
     maxUploadMb: typhoonMaxUploadMb,
     detail,
-    installCommand: 'scripts/install_typhoon_ocr.sh'
+    installCommand: 'npm run setup'
   };
 }
 
@@ -744,7 +743,7 @@ async function startTyphoonOcrWorker() {
       .catch(() => '');
   }
   if (!bin) {
-    throw new Error('ยังไม่พบ Ollama ในเครื่อง กรุณารัน scripts/install_typhoon_ocr.sh ก่อนครับ');
+    throw new Error('ยังไม่พบ Ollama ในเครื่อง กรุณารัน npm run setup ก่อนครับ');
   }
 
   const child = spawn(bin, ['serve'], {
@@ -752,7 +751,7 @@ async function startTyphoonOcrWorker() {
     stdio: 'ignore',
     env: {
       ...process.env,
-      OLLAMA_HOST: typhoonBaseUrl.replace(/^https?:\/\//, '')
+      OLLAMA_HOST: ollamaBaseUrl.replace(/^https?:\/\//, '')
     }
   });
   child.unref();
@@ -1039,7 +1038,7 @@ async function callLocalGemma(messages, attachments = []) {
 
   const userInstruction = `${rag.context ? `Relevant Knowledge:\n${rag.context}\n\n` : ''}${attachmentText ? `Attachments:\n${attachmentText}\n\n` : ''}Conversation so far:\n${conversationText}\n\nวิเคราะห์ปัญหา IT จากบริบททั้งหมดด้านบน แล้วตอบกลับเป็น JSON object ตาม schema เท่านั้น ห้ามใส่ markdown code fence รอบ JSON`;
 
-  const response = await fetchWithTimeout(`${llmBaseUrl}/chat/completions`, {
+  const response = await fetchWithTimeout(`${ollamaOpenAiBaseUrl}/chat/completions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -1074,11 +1073,6 @@ async function callLocalGemma(messages, attachments = []) {
     ticket,
     ragContext: { count: rag.count, items: rag.items }
   };
-}
-
-function ollamaRestBaseUrl() {
-  const configured = process.env.OLLAMA_BASE_URL || llmBaseUrl || typhoonBaseUrl;
-  return String(configured).replace(/\/v1\/?$/, '').replace(/\/$/, '');
 }
 
 function sendSse(res, event, data = {}) {
@@ -1345,17 +1339,19 @@ app.get('/api/admin/setup/status', requireAdmin, async (_req, res) => {
     } catch { return false; }
   };
   let modelReady = false;
-  let modelDetail = `ยังไม่พบ local model server ที่ ${llmBaseUrl}`;
+  let modelDetail = `ยังไม่พบ Ollama ที่ ${ollamaBaseUrl}`;
   try {
-    const response = await fetch(`${llmBaseUrl}/models`);
-    modelReady = response.ok;
-    modelDetail = modelReady ? `LLM server พร้อมตอบผ่าน ${llmModel}` : modelDetail;
+    const response = await fetch(`${ollamaBaseUrl}/api/tags`);
+    const data = await response.json();
+    const models = Array.isArray(data.models) ? data.models : [];
+    modelReady = response.ok && models.some((model) => model.name === llmModel || String(model.name || '').startsWith(llmModel));
+    modelDetail = modelReady ? `Ollama พร้อมตอบผ่าน ${llmModel}` : `Ollama เปิดอยู่ แต่ยังไม่มีโมเดล ${llmModel}`;
   } catch {}
   const pdfinfo = await commandExists('pdfinfo');
   const pdftoppm = await commandExists('pdftoppm');
   res.json({ ok: true, checks: [
     { id: 'admin_auth', label: 'Admin authentication', state: configuredAdminAuth ? 'pass' : 'warn', ready: Boolean(configuredAdminAuth), detail: configuredAdminAuth ? 'ตั้งค่า ADMIN_AUTH แล้ว' : 'ใช้ dev-only fallback เฉพาะโหมด development', nextStep: 'ตั้งค่า ADMIN_AUTH ใน .env ก่อนใช้งานจริง' },
-    { id: 'model', label: 'LLM server', state: modelReady ? 'pass' : 'fail', ready: modelReady, detail: modelDetail, nextStep: 'รัน npm run local หรือ scripts/start_model.sh' },
+    { id: 'model', label: 'Ollama chat model', state: modelReady ? 'pass' : 'fail', ready: modelReady, detail: modelDetail, nextStep: 'รัน npm run setup เพื่อดึงโมเดลที่จำเป็น' },
     { id: 'knowledge', label: 'Knowledge index', state: knowledge.docs?.length ? 'pass' : 'warn', ready: Boolean(knowledge.docs?.length), detail: knowledge.docs?.length ? `มีเอกสาร ${knowledge.docs.length} รายการในดัชนี` : 'ยังไม่มีเอกสารในดัชนี', nextStep: 'อัปโหลดเอกสารแล้วกด Reindex knowledge' },
     { id: 'sheet', label: 'Google Sheet webhook', state: sheetWebhookUrl ? 'pass' : 'warn', ready: Boolean(sheetWebhookUrl), detail: sheetWebhookUrl ? 'ตั้งค่า webhook แล้ว' : 'ยังไม่ตั้งค่า webhook', nextStep: 'ใส่ GOOGLE_SHEET_WEBHOOK_URL ใน .env หากต้องการส่ง Sheet' },
     { id: 'ocr', label: 'Typhoon/Ollama OCR', state: ocr.available ? 'pass' : ocr.reachable ? 'warn' : 'fail', ready: ocr.available, detail: ocr.detail, nextStep: ocr.installCommand },
@@ -1374,7 +1370,7 @@ app.post('/api/admin/setup/test-sheet', requireAdmin, async (_req, res) => {
 });
 app.post('/api/admin/setup/test-llm', requireAdmin, async (_req, res) => {
   try {
-    const response = await fetchWithTimeout(`${llmBaseUrl}/chat/completions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: llmModel, max_tokens: 32, messages: [{ role: 'user', content: 'ตอบคำว่า ok สั้นๆ' }] }) });
+    const response = await fetchWithTimeout(`${ollamaOpenAiBaseUrl}/chat/completions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: llmModel, max_tokens: 32, messages: [{ role: 'user', content: 'ตอบคำว่า ok สั้นๆ' }] }) });
     res.json({ ok: response.ok, detail: response.ok ? 'LLM test passed' : `HTTP ${response.status}` });
   } catch (error) { res.status(500).json({ error: error.message }); }
 });
@@ -1489,56 +1485,8 @@ app.get('/api/admin/attachments/:day/:filename', requireAdmin, async (req, res) 
   }
 });
 
-app.get('/api/models', requireAdmin, async (_req, res) => {
-  const candidates = [
-    {
-      id: 'gemma4-e4b-qat',
-      label: 'Gemma 4 E4B QAT',
-      size: '5.15GB',
-      context: '8K recommended',
-      localPath: 'models/gemma-4-e4b-qat/gemma-4-E4B_q4_0-it.gguf',
-      startCommand: 'MODEL_SIZE=e4b CTX_SIZE=8192 HOST=0.0.0.0 LLM_PORT=18080 scripts/start_model.sh'
-    },
-    {
-      id: 'gemma4-12b-qat',
-      label: 'Gemma 4 12B QAT',
-      size: '6.98GB',
-      context: '16K optional, 8K safer',
-      localPath: 'models/gemma-4-12b-qat/gemma-4-12b-it-qat-q4_0.gguf',
-      startCommand: 'MODEL_SIZE=12b CTX_SIZE=8192 HOST=0.0.0.0 LLM_PORT=18080 scripts/start_model.sh'
-    }
-  ];
-
-  const models = [];
-  for (const model of candidates) {
-    const exists = await fs.access(path.join(process.cwd(), model.localPath)).then(() => true).catch(() => false);
-    models.push({ ...model, exists, selected: model.id === llmModel });
-  }
-
-  let serverModels = [];
-  try {
-    const response = await fetch(`${llmBaseUrl}/models`);
-    const data = await response.json();
-    serverModels = data.data || data.models || [];
-  } catch {}
-
-  res.json({ ok: true, selected: llmModel, models, serverModels });
-});
-
-app.post('/api/models/select', requireAdmin, async (req, res) => {
-  const model = String(req.body?.model || '').trim();
-  const allowed = ['gemma4-e4b-qat', 'gemma4-12b-qat'];
-  if (!allowed.includes(model)) {
-    res.status(400).json({ error: 'unknown model' });
-    return;
-  }
-  llmModel = model;
-  await auditAdmin(req, 'model.select', model, true);
-  res.json({ ok: true, selected: llmModel, note: 'Model alias updated for API calls. If llama-server is running a different model, restart it with the matching start command.' });
-});
-
 app.get('/api/health', (_req, res) => {
-  res.json({ ok: true, llmBaseUrl, llmModel, sheetEnabled: Boolean(sheetWebhookUrl) });
+  res.json({ ok: true, ollamaBaseUrl, llmModel, typhoonModel, sheetEnabled: Boolean(sheetWebhookUrl) });
 });
 
 app.get('/api/config', (_req, res) => {
@@ -1617,7 +1565,7 @@ app.post('/api/attachments', uploadLimiter, async (req, res) => {
         ocrOk,
         ocrText,
         ocrError,
-        visionSupported: Boolean(ollamaVisionModel) && isImageFile(file.name, file.type),
+        visionSupported: isImageFile(file.name, file.type),
         visionText,
         visionError
       }
@@ -1763,7 +1711,7 @@ app.post('/api/chat/stream', chatLimiter, async (req, res) => {
     };
     if (typeof req.body?.think === 'boolean') body.think = req.body.think;
 
-    const response = await fetch(`${ollamaRestBaseUrl()}/api/chat`, {
+    const response = await fetch(`${ollamaBaseUrl}/api/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
@@ -1879,7 +1827,7 @@ Return valid JSON only:
 }`;
   const context = `Attached File Text:\n${attachmentText || '(no attached readable text)'}\n\nRelevant Knowledge:\n${ragContext || '(no direct matches)'}\n\nConversation:\n${conversation}`;
   const call = async (messages, maxTokens = 1100) => {
-    const response = await fetchWithTimeout(`${llmBaseUrl}/chat/completions`, {
+    const response = await fetchWithTimeout(`${ollamaOpenAiBaseUrl}/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model: llmModel, temperature: detailed ? 0.15 : 0.2, max_tokens: maxTokens, messages })

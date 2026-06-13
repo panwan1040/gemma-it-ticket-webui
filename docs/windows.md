@@ -1,15 +1,36 @@
 # Windows Setup
 
-This project supports Windows through Ollama.
+This project uses Ollama as the only local model runtime on Windows.
 
-The Windows path intentionally avoids building `llama.cpp` locally because that is harder to support across CPU, CUDA, Vulkan, and compiler setups.
+## Requirements
+
+- Windows 10 or 11
+- PowerShell 5+
+- winget
 
 ## Install
 
 ```powershell
-git clone https://github.com/panwan1040/gemma-it-ticket-webui.git
-cd gemma-it-ticket-webui
 npm run setup:windows
+```
+
+The setup script installs or checks:
+
+- Node.js LTS
+- Ollama
+- Poppler, when OCR is enabled
+
+It also pulls:
+
+```text
+gemma4:e4b-it-qat
+scb10x/typhoon-ocr1.5-3b
+```
+
+Skip OCR download:
+
+```powershell
+$env:INSTALL_OCR='0'; npm run setup:windows
 ```
 
 ## Run
@@ -18,42 +39,18 @@ npm run setup:windows
 npm run local:windows
 ```
 
-Open the app at `http://127.0.0.1:3000`. The general user menu shows ticket intake and knowledge chat only. Admins open the protected document library directly at `http://127.0.0.1:3000/admin`.
-
-## Portable launcher
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\portable\windows\Install.ps1
-powershell -ExecutionPolicy Bypass -File .\portable\windows\Run.ps1
-```
-
-## What gets installed
-
-- Node.js LTS
-- Ollama
-- Poppler for PDF OCR
-- Main Gemma GGUF model through Ollama
-- Typhoon OCR model through Ollama
-- npm dependencies
-
-## Configuration
-
-Windows setup writes these `.env` values:
+Open:
 
 ```text
-LLM_BASE_URL=http://127.0.0.1:11434/v1
-LLM_MODEL=hf.co/google/gemma-4-E4B-it-qat-q4_0-gguf
-TYPHOON_OCR_BASE_URL=http://127.0.0.1:11434
-TYPHOON_OCR_MODEL=scb10x/typhoon-ocr1.5-3b
+http://127.0.0.1:3000
 ```
 
-## Notes
+## Environment
 
-- Model files are not committed to git.
-- First install can take a long time because the models are several GB.
-- If `pdftoppm` is not found after installing Poppler, open a new PowerShell window and run again.
-- If Ollama is already running, the run script reuses it.
+The app uses these model settings:
 
-## Admin password
-
-Set `ADMIN_AUTH` in `.env` before real use. Production mode refuses unsafe defaults.
+```env
+OLLAMA_BASE_URL=http://127.0.0.1:11434
+LLM_MODEL=gemma4:e4b-it-qat
+TYPHOON_OCR_MODEL=scb10x/typhoon-ocr1.5-3b
+```

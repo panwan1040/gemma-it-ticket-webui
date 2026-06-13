@@ -60,9 +60,9 @@ test('protected admin endpoints require auth', async () => {
   const server = http.createServer(mod.app);
   await new Promise((resolve) => server.listen(0, resolve));
   const port = server.address().port;
-  const unauth = await fetch(`http://127.0.0.1:${port}/api/models`);
+  const unauth = await fetch(`http://127.0.0.1:${port}/api/admin/tickets`);
   assert.equal(unauth.status, 401);
-  const auth = await fetch(`http://127.0.0.1:${port}/api/models`, {
+  const auth = await fetch(`http://127.0.0.1:${port}/api/admin/tickets`, {
     headers: { Authorization: `Basic ${Buffer.from('admin:test-secret').toString('base64')}` }
   });
   assert.equal(auth.status, 200);

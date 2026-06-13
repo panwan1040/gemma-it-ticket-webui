@@ -1,7 +1,7 @@
 param(
-  [ValidateSet('e4b','12b')]
-  [string]$ModelSize = $(if ($env:MODEL_SIZE) { $env:MODEL_SIZE } else { 'e4b' }),
-  [string]$InstallOcr = $(if ($env:INSTALL_OCR) { $env:INSTALL_OCR } else { '1' })
+  [string]$ChatModel = $(if ($env:LLM_MODEL) { $env:LLM_MODEL } else { 'gemma4:e4b-it-qat' }),
+  [string]$InstallOcr = $(if ($env:INSTALL_OCR) { $env:INSTALL_OCR } else { '1' }),
+  [string]$OcrModel = $(if ($env:TYPHOON_OCR_MODEL) { $env:TYPHOON_OCR_MODEL } else { 'scb10x/typhoon-ocr1.5-3b' })
 )
 
 $ErrorActionPreference = 'Stop'
@@ -41,6 +41,12 @@ function Set-EnvValue([string]$Path, [string]$Name, [string]$Value) {
     if (-not $content.EndsWith("`n")) { $content += "`n" }
     $content += "$line`n"
   }
+  Set-Content -Path $Path -Value $content -Encoding UTF8
+}
+
+function Remove-EnvValue([string]$Path, [string]$Name) {
+  $content = Get-Content $Path -Raw
+  $content = $content -replace "(?m)^$([regex]::Escape($Name))=.*\r?\n?", ''
   Set-Content -Path $Path -Value $content -Encoding UTF8
 }
 
@@ -85,18 +91,17 @@ function Add-PopplerToPathIfFound {
 }
 
 Write-Step 'Local AI Helpdesk Windows setup'
-Write-Host "    Model: $ModelSize"
-Write-Host "    OCR:   $InstallOcr"
+Write-Host "    Runtime: Ollama"
+Write-Host "    Chat:    $ChatModel"
+Write-Host "    OCR:     $InstallOcr"
 
 Ensure-Command node 'OpenJS.NodeJS.LTS' 'Node.js LTS'
 Ensure-Command npm 'OpenJS.NodeJS.LTS' 'npm'
 Ensure-Command ollama 'Ollama.Ollama' 'Ollama'
 
-if ($InstallOcr -ne '0') {
-  if (-not (Command-Exists pdftoppm)) {
-    Install-WingetPackage 'oschwartz10612.Poppler' 'Poppler for Windows'
-    Add-PopplerToPathIfFound
-  }
+if ($InstallOcr -ne '0' -and -not (Command-Exists pdftoppm)) {
+  Install-WingetPackage 'oschwartz10612.Poppler' 'Poppler for Windows'
+  Add-PopplerToPathIfFound
 }
 
 if (-not (Test-Path '.env')) {
@@ -106,29 +111,26 @@ if (-not (Test-Path '.env')) {
   Write-Step 'Keeping existing .env'
 }
 
-if ($ModelSize -eq '12b') {
-  $mainModel = 'hf.co/google/gemma-4-12B-it-qat-q4_0-gguf'
-} else {
-  $mainModel = 'hf.co/google/gemma-4-E4B-it-qat-q4_0-gguf'
-}
-
-Set-EnvValue '.env' 'LLM_BASE_URL' 'http://127.0.0.1:11434/v1'
-Set-EnvValue '.env' 'LLM_MODEL' $mainModel
+Set-EnvValue '.env' 'OLLAMA_BASE_URL' 'http://127.0.0.1:11434'
+Set-EnvValue '.env' 'LLM_MODEL' $ChatModel
 Set-EnvValue '.env' 'PORT' '3000'
-Set-EnvValue '.env' 'TYPHOON_OCR_BASE_URL' 'http://127.0.0.1:11434'
-Set-EnvValue '.env' 'TYPHOON_OCR_MODEL' 'scb10x/typhoon-ocr1.5-3b'
+Set-EnvValue '.env' 'TYPHOON_OCR_MODEL' $OcrModel
+Remove-EnvValue '.env' 'LLM_BASE_URL'
+Remove-EnvValue '.env' 'TYPHOON_OCR_BASE_URL'
+Remove-EnvValue '.env' 'OLLAMA_VISION_BASE_URL'
+Remove-EnvValue '.env' 'OLLAMA_VISION_MODEL'
 
 Write-Step 'Installing npm dependencies'
 npm install
 
 Start-OllamaIfNeeded
 
-Write-Step "Pulling main model: $mainModel"
-ollama pull $mainModel
+Write-Step "Pulling chat model: $ChatModel"
+ollama pull $ChatModel
 
 if ($InstallOcr -ne '0') {
-  Write-Step 'Pulling OCR model: scb10x/typhoon-ocr1.5-3b'
-  ollama pull 'scb10x/typhoon-ocr1.5-3b'
+  Write-Step "Pulling OCR model: $OcrModel"
+  ollama pull $OcrModel
 }
 
 Write-Step 'Indexing knowledge library'
