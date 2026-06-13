@@ -1678,6 +1678,72 @@ button, textarea, input, select {
   background: #353535;
   color: #ffffff;
 }
+.admin-tabs {
+  border-bottom-color: #303030;
+  background: #151515;
+}
+.admin-tabs button {
+  border-color: #343434;
+  background: #242424;
+  color: #c7c7c7;
+}
+.admin-tabs button:hover {
+  background: #303030;
+  color: #ffffff;
+}
+.admin-tabs button.active {
+  border-color: #4a4a4a;
+  background: #f0f0f0;
+  color: #151515;
+}
+.table-head {
+  background: #202020;
+  color: #9a9a9a;
+}
+.table-row:hover,
+.ticket-row:hover {
+  background: #202020;
+}
+.ticket-row.active {
+  border-color: #5a5a5a;
+  background: #232323;
+}
+.ticket-row span,
+.table-row > span:first-child {
+  color: #ededed;
+}
+.library-toolbar select,
+.admin-filterbar select,
+.ticket-detail select {
+  color-scheme: dark;
+}
+.notice.success {
+  border-color: rgba(74, 222, 128, 0.28);
+  background: rgba(22, 101, 52, 0.2);
+  color: #86efac;
+}
+.notice.warning {
+  border-color: rgba(251, 191, 36, 0.28);
+  background: rgba(113, 63, 18, 0.22);
+  color: #facc15;
+}
+.notice.danger {
+  border-color: rgba(248, 113, 113, 0.32);
+  background: rgba(127, 29, 29, 0.26);
+  color: #fca5a5;
+}
+.markdown-table-wrap {
+  border-color: #303030;
+  background: #181818;
+}
+.markdown-message th {
+  background: #202020;
+  color: #e5e5e5;
+}
+.markdown-message td,
+.markdown-message th {
+  border-color: #303030;
+}
 
 @media (max-width: 900px) {
   .app-shell {
